@@ -1,3 +1,5 @@
+# THIS IS OUT-DATED --> UDPATE[KAM]
+
 # RLang NPC Demo: Needle in a Haystack
 
 A pygame demo showing NPCs with **embodied knowledge** — they only know what they've personally observed while pursuing their own goals.
