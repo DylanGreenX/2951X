@@ -191,3 +191,87 @@ class NPCBrainGoalDriven(NPCBrain):
             options.append("up")
 
         return random.choice(options) if options else random.choice(["up", "down", "left", "right"])
+
+
+# Extended brain types for LLM/SLM experiments only.
+# These modify knowledge acquisition or sharing behavior, which only
+# matters when a language model generates the response.
+
+
+class MemoryDecayNPCBrain(NPCBrainGoalDriven):
+    """Observations fade after decay_steps. Only useful with LLM/SLM."""
+
+    def __init__(self, npc, world, goal_label: str, decay_steps: int = 50):
+        super().__init__(npc, world, goal_label)
+        self.decay_steps = decay_steps
+        self._observations_log = []
+
+    def tick(self) -> str | None:
+        result = super().tick()
+
+        current_step = self.npc.steps_taken
+        for shape in self.state.observed_shapes:
+            if shape not in [obs[1] for obs in self._observations_log]:
+                self._observations_log.append((current_step, shape, (shape.x, shape.y)))
+
+        cutoff = current_step - self.decay_steps
+        self._observations_log = [
+            (s, sh, loc) for s, sh, loc in self._observations_log if s > cutoff
+        ]
+
+        self.state.observed_shapes = [sh for _, sh, _ in self._observations_log]
+        self.state.shape_locations = {}
+        for _, shape, loc in self._observations_log:
+            self.state.shape_locations.setdefault(shape.label, [])
+            if loc not in self.state.shape_locations[shape.label]:
+                self.state.shape_locations[shape.label].append(loc)
+
+        return result
+
+
+class SelectiveAttentionNPCBrain(NPCBrainGoalDriven):
+    """Only notices one attribute (color or shape). Only useful with LLM/SLM."""
+
+    def __init__(self, npc, world, goal_label: str, attention_attr: str = "color"):
+        super().__init__(npc, world, goal_label)
+        self.attention_attr = attention_attr
+
+    def tick(self) -> str | None:
+        result = super().tick()
+
+        if self.attention_attr == "color":
+            filtered = [s for s in self.state.observed_shapes if s.color == "blue"]
+        elif self.attention_attr == "shape":
+            filtered = [s for s in self.state.observed_shapes if s.shape_type == "circle"]
+        else:
+            return result
+
+        self.state.observed_shapes = filtered
+        self.state.shape_locations = {}
+        for shape in filtered:
+            self.state.shape_locations.setdefault(shape.label, [])
+            if (shape.x, shape.y) not in self.state.shape_locations[shape.label]:
+                self.state.shape_locations[shape.label].append((shape.x, shape.y))
+
+        return result
+
+
+class CompetitiveNPCBrain(NPCBrainGoalDriven):
+    """Competes for player's target. Withholds info via get_sharing_context()."""
+
+    def __init__(self, npc, world):
+        super().__init__(npc, world, goal_label="red_triangle")
+
+    def get_sharing_context(self, target_color: str, target_shape: str) -> list[str]:
+        """Return modified LLM context that withholds target location."""
+        base_context = self.state.to_llm_context()
+        target_label = f"{target_color}_{target_shape}"
+
+        if not self.state.seen_label(target_label):
+            return base_context
+
+        return [
+            line if target_label.replace("_", " ") not in line.lower()
+            else "[COMPETITIVE] I may have seen some red shapes, but I'm not certain of details."
+            for line in base_context
+        ]
