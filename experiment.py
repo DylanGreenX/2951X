@@ -148,28 +148,21 @@ CORE_CONDITIONS = [
     ExperimentCondition("Embodied + SLM", "embodied", "slm"),
 ]
 
-DETERMINISTIC_CONDITIONS = [
-    ExperimentCondition("Perfect + Deterministic", "perfect", "deterministic"),
-    ExperimentCondition("Embodied + Deterministic", "embodied", "deterministic"),
-]
 
-
-def run_deterministic_baseline(num_trials: int = 50) -> pd.DataFrame:
+def run_core_experiments(num_trials: int = 50, response_filter: str = None) -> pd.DataFrame:
+    """
+    Run core experiment matrix. Pass response_filter="deterministic" to run
+    only deterministic conditions, or None for the full 2x3 matrix.
+    """
     runner = ExperimentRunner()
-    all_results = []
-    for condition in DETERMINISTIC_CONDITIONS:
-        all_results.extend(runner.run_condition(condition, num_trials))
-    df = pd.DataFrame(all_results)
-    df.to_csv('deterministic_baseline_results.csv', index=False)
-    print(f"Results saved to deterministic_baseline_results.csv")
-    return df
+    conditions = CORE_CONDITIONS
+    if response_filter:
+        conditions = [c for c in conditions if c.response_mode == response_filter]
 
-
-def run_core_experiments(num_trials: int = 50) -> pd.DataFrame:
-    runner = ExperimentRunner()
     all_results = []
-    for condition in CORE_CONDITIONS:
+    for condition in conditions:
         all_results.extend(runner.run_condition(condition, num_trials))
+
     df = pd.DataFrame(all_results)
     df.to_csv('core_experiments_results.csv', index=False)
     print(f"Results saved to core_experiments_results.csv")
@@ -177,6 +170,6 @@ def run_core_experiments(num_trials: int = 50) -> pd.DataFrame:
 
 
 if __name__ == "__main__":
-    results = run_deterministic_baseline(num_trials=5)
+    results = run_core_experiments(num_trials=5, response_filter="deterministic")
     print("Sample results:")
     print(results[['condition', 'response_time_ms', 'accuracy', 'target_was_observed']].head())
