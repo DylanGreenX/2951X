@@ -67,7 +67,6 @@ class ExperimentRunner:
         return {
             'trial': trial,
             'condition': condition.name,
-            'seed': trial,
             'question': question,
             'response_text': response_text,
             'response_time_ms': response_time_ms,
