@@ -17,7 +17,7 @@ making it easy to swap in an RL-trained policy later.
 import random
 from entities import NPC
 from world import GameWorld
-from rlang_engine import RLangState
+from rlang_engine import RLangState, get_natural_object_name
 
 
 class NPCBrain:
@@ -122,6 +122,7 @@ class NPCBrainGoalDriven(NPCBrain):
         # goal_label is also stored on the entity for logging / replay access
         self.npc.goal_label = goal_label
         self.goal_label = goal_label
+        self.natural_goal_name = get_natural_object_name(goal_label)
         self.goal_collected: int = 0
         # Known uncollected positions of the target, learned from observations
         self._known_target_positions: list[tuple[int, int]] = []
@@ -140,7 +141,7 @@ class NPCBrainGoalDriven(NPCBrain):
             pos = (shape.x, shape.y)
             if pos in self._known_target_positions:
                 self._known_target_positions.remove(pos)
-            return f"Collected {self.goal_label.replace('_', ' ')} at ({shape.x}, {shape.y})!"
+            return f"Collected {self.natural_goal_name} at ({shape.x}, {shape.y})!"
 
         return None
 
@@ -266,12 +267,13 @@ class CompetitiveNPCBrain(NPCBrainGoalDriven):
         """Return modified LLM context that withholds target location."""
         base_context = self.state.to_llm_context()
         target_label = f"{target_color}_{target_shape}"
+        target_natural_name = get_natural_object_name(target_label)
 
         if not self.state.seen_label(target_label):
             return base_context
 
         return [
-            line if target_label.replace("_", " ") not in line.lower()
-            else "[COMPETITIVE] I may have seen some red shapes, but I'm not certain of details."
+            line if target_natural_name.lower() not in line.lower()
+            else "I've seen some valuable items in my travels"
             for line in base_context
         ]

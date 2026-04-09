@@ -4,8 +4,8 @@ from dataclasses import dataclass, field
 
 @dataclass
 class Shape:
-    color: str        # "red", "blue", "green", "yellow"
-    shape_type: str   # "triangle", "circle", "square"
+    color: str        # see config.COLORS
+    shape_type: str   # see config.SHAPES
     x: int
     y: int
     collected: bool = False

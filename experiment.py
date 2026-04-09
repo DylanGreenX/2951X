@@ -6,7 +6,6 @@ Analysis lives in analyze_results.py.
 """
 
 import time
-import re
 import pandas as pd
 from dataclasses import dataclass
 from typing import Dict, List, Any
@@ -16,6 +15,7 @@ from world import GameWorld
 from entities import Player, NPC
 from npc_brain import NPCBrainGoalDriven, NPCBrainWandering
 from interaction import InteractionManager
+from rlang_engine import get_natural_object_name, extract_coordinates_from_text
 
 
 @dataclass
@@ -53,7 +53,7 @@ class ExperimentRunner:
         original_mode = config.NPC_RESPONSE_MODE
         config.NPC_RESPONSE_MODE = condition.response_mode
         try:
-            question = f"Where is the {world.target_color} {world.target_shape}?"
+            question = self._create_natural_question(world.target_color, world.target_shape)
             start_time = time.perf_counter()
             _, response_text = self.interaction_manager.start_interaction(
                 brain, world.target_color, world.target_shape
@@ -89,6 +89,10 @@ class ExperimentRunner:
             self._give_perfect_knowledge(brain, world)
         return world, player, npc, brain
 
+    def _create_natural_question(self, target_color: str, target_shape: str) -> str:
+        label = f"{target_color}_{target_shape}"
+        return f"Where is the {get_natural_object_name(label)}?"
+
     def _give_perfect_knowledge(self, brain, world):
         for x in range(world.size):
             for y in range(world.size):
@@ -113,28 +117,28 @@ class ExperimentRunner:
 
     def _eval_accuracy(self, response: str, target_location: tuple) -> float:
         if target_location is None:
-            return 1.0 if "haven't seen" in response.lower() or "don't know" in response.lower() else 0.0
-        coord_str = f"({target_location[0]}, {target_location[1]})"
-        return 1.0 if coord_str in response else 0.0
+            negative_indicators = ["haven't seen", "don't know", "haven't found", "not seen"]
+            return 1.0 if any(ind in response.lower() for ind in negative_indicators) else 0.0
+        mentioned_coords = extract_coordinates_from_text(response)
+        return 1.0 if target_location in mentioned_coords else 0.0
 
     def _eval_relevance(self, response: str, target_location: tuple) -> float:
         if target_location is None:
-            return 1.0 if "haven't" in response.lower() else 0.0
-        if f"({target_location[0]}, {target_location[1]})" in response:
+            return 1.0 if any(word in response.lower() for word in ["haven't", "don't", "not", "no"]) else 0.0
+        if target_location in extract_coordinates_from_text(response):
             return 1.0
-        elif any(word in response.lower() for word in ["north", "south", "east", "west", "near", "area"]):
+        if any(word in response.lower() for word in ["near", "by", "outside", "area", "around", "close"]):
             return 0.5
-        elif "seen" in response.lower():
+        if any(word in response.lower() for word in ["seen", "found", "spotted"]):
             return 0.3
         return 0.0
 
     def _eval_groundedness(self, response: str, npc_knowledge: List[str]) -> float:
-        response_coords = re.findall(r'\((\d+),\s*(\d+)\)', response)
-        knowledge_text = " ".join(npc_knowledge)
-        knowledge_coords = re.findall(r'\((\d+),\s*(\d+)\)', knowledge_text)
+        response_coords = extract_coordinates_from_text(response)
+        knowledge_coords = extract_coordinates_from_text(" ".join(npc_knowledge))
         if not response_coords:
             return 1.0
-        grounded = sum(1 for c in response_coords if c in knowledge_coords)
+        grounded = sum(1 for coord in response_coords if coord in knowledge_coords)
         return grounded / len(response_coords)
 
 

@@ -10,8 +10,36 @@ The key method is to_llm_context() which serializes the NPC's
 grounded knowledge into natural language strings for the LLM.
 """
 from __future__ import annotations
+import re
 from dataclasses import dataclass, field
 from entities import Shape
+import config
+
+_LOCATION_TO_COORDS = {v: k for k, v in config.NATURAL_LOCATIONS.items()}
+
+
+def get_natural_object_name(label: str) -> str:
+    if label in config.NATURAL_OBJECTS:
+        return config.NATURAL_OBJECTS[label]
+    if '_' in label:
+        color, shape = label.split('_', 1)
+        return f"{config.NATURAL_COLORS.get(color, color)} {config.NATURAL_SHAPES.get(shape, shape)}"
+    return label.replace('_', ' ')
+
+
+def get_natural_location_name(x: int, y: int) -> str:
+    return config.NATURAL_LOCATIONS.get((x, y), f"coordinates ({x}, {y})")
+
+
+def extract_coordinates_from_text(text: str) -> list:
+    """Extract coordinates from both explicit format and natural location names."""
+    coords = []
+    for x, y in re.findall(r'\((\d+),\s*(\d+)\)', text):
+        coords.append((int(x), int(y)))
+    for location, coord in _LOCATION_TO_COORDS.items():
+        if location.lower() in text.lower():
+            coords.append(coord)
+    return coords
 
 
 @dataclass
@@ -85,39 +113,29 @@ class RLangState:
     # ── Serialization → LLM context ────────────────────────────
 
     def to_llm_context(self) -> list[str]:
-        """
-        Serialize the NPC's RLang-grounded knowledge into a list of
-        natural language strings. This is the handoff to the LLM.
-
-        Each string represents one piece of grounded knowledge.
-        The LLM team injects these into the system prompt.
-
-        # TODO: Confirm expected format with Marcus (API layer integration).
-        # Current format: list of tagged strings e.g. "[FACTOR] I am at (3,7)."
-        # May need to change to a single joined string, JSON, or tool-call schema.
-        """
+        """Serialize NPC knowledge into natural Skyrim vocabulary for LLM prompts."""
         lines: list[str] = []
 
-        # Identity and exploration state
-        lines.append(f"[FACTOR] I am at position ({self.npc_pos[0]}, {self.npc_pos[1]}).")
-        lines.append(
-            f"[FACTOR] I have explored {len(self.observed_cells)}/{self.world_size**2} "
-            f"cells ({self.coverage:.0%} of the world)."
-        )
+        current_location = get_natural_location_name(self.npc_pos[0], self.npc_pos[1])
+        lines.append(f"I am currently {current_location}.")
+        lines.append(f"I've explored {self.coverage:.0%} of this region during my travels.")
 
-        # Explored regions
         regions = self.explored_regions
         explored = [r for r, v in regions.items() if v]
         unexplored = [r for r, v in regions.items() if not v]
         if explored:
-            lines.append(f"[PROPOSITION] I have explored the {', '.join(explored)} region(s).")
+            lines.append(f"I have traveled through the {', '.join(explored)} area(s).")
         if unexplored:
-            lines.append(f"[PROPOSITION] I have NOT explored the {', '.join(unexplored)} region(s).")
+            lines.append(f"I have not yet ventured into the {', '.join(unexplored)} region(s).")
 
-        # All observed shapes
         for label, positions in self.shape_locations.items():
-            display = label.replace("_", " ")
-            pos_str = ", ".join(f"({x},{y})" for x, y in positions)
-            lines.append(f"[OBSERVATION] I have seen {display}(s) at: {pos_str}.")
+            natural_name = get_natural_object_name(label)
+            natural_locations = [get_natural_location_name(x, y) for x, y in positions]
+
+            if len(positions) == 1:
+                lines.append(f"I found a {natural_name} {natural_locations[0]}.")
+            else:
+                location_list = ", ".join(natural_locations)
+                lines.append(f"I've seen {len(positions)} {natural_name}s at: {location_list}.")
 
         return lines
