@@ -10,8 +10,36 @@ The key method is to_llm_context() which serializes the NPC's
 grounded knowledge into natural language strings for the LLM.
 """
 from __future__ import annotations
+import re
 from dataclasses import dataclass, field
 from entities import Shape
+import config
+
+_LOCATION_TO_COORDS = {v: k for k, v in config.NATURAL_LOCATIONS.items()}
+
+
+def get_natural_object_name(label: str) -> str:
+    if label in config.NATURAL_OBJECTS:
+        return config.NATURAL_OBJECTS[label]
+    if '_' in label:
+        color, shape = label.split('_', 1)
+        return f"{config.NATURAL_COLORS.get(color, color)} {config.NATURAL_SHAPES.get(shape, shape)}"
+    return label.replace('_', ' ')
+
+
+def get_natural_location_name(x: int, y: int) -> str:
+    return config.NATURAL_LOCATIONS.get((x, y), f"coordinates ({x}, {y})")
+
+
+def extract_coordinates_from_text(text: str) -> list:
+    """Extract coordinates from both explicit format and natural location names."""
+    coords = []
+    for x, y in re.findall(r'\((\d+),\s*(\d+)\)', text):
+        coords.append((int(x), int(y)))
+    for location, coord in _LOCATION_TO_COORDS.items():
+        if location.lower() in text.lower():
+            coords.append(coord)
+    return coords
 
 
 @dataclass
@@ -19,54 +47,33 @@ class RLangState:
     """
     The NPC's grounded knowledge, structured as RLang primitives.
 
-    Factors  = slices of raw state (position, sight grid)
+    Factors      = slices of raw state (position, sight grid)
     Propositions = boolean beliefs derived from accumulated observations
-    Effects  = causal knowledge ("I collected a blue circle by moving to it")
+    Effects      = causal knowledge (e.g. "I picked up X by moving to it")
 
     This object represents ONLY what the NPC has observed — never the
-    full game state.
+    full game state. It is intentionally goal-agnostic: goal tracking
+    (what the NPC is pursuing, what it has collected) lives in the brain.
     """
 
     world_size: int = 15
 
     # ── Factors (raw state slices) ──────────────────────────────
-    # Factor npc_pos := S[0:2]
     npc_pos: tuple[int, int] = (0, 0)
 
     # ── Accumulated memory (built from observations over time) ──
     observed_cells: set = field(default_factory=set)
     observed_shapes: list[Shape] = field(default_factory=list)
 
-    # Indexed by shape label for fast lookup
     # e.g. {"red_triangle": [(5,12)], "blue_circle": [(3,7), (8,2)]}
     shape_locations: dict[str, list[tuple[int, int]]] = field(default_factory=dict)
 
-    # NPC's own goal tracking
-    blue_circles_collected: int = 0
-    known_blue_circle_positions: list[tuple[int, int]] = field(default_factory=list)
-
     # ── Propositions (boolean beliefs) ──────────────────────────
-    # These are recomputed from memory each tick.
 
     @property
     def coverage(self) -> float:
         """Fraction of world explored."""
         return len(self.observed_cells) / (self.world_size ** 2)
-
-    @property
-    def seen_any_red_triangle(self) -> bool:
-        """Proposition: seen_red_triangle := 'red_triangle' in shape_locations"""
-        return "red_triangle" in self.shape_locations
-
-    @property
-    def seen_any_triangle(self) -> bool:
-        """Proposition: seen_triangle := any key containing 'triangle'"""
-        return any("triangle" in k for k in self.shape_locations)
-
-    @property
-    def knows_blue_circle_location(self) -> bool:
-        """Proposition: knows_target := 'blue_circle' in shape_locations and not all collected"""
-        return len(self.known_blue_circle_positions) > 0
 
     @property
     def explored_regions(self) -> dict[str, bool]:
@@ -84,11 +91,15 @@ class RLangState:
                 regions["SE"] = True
         return regions
 
+    def seen_label(self, label: str) -> bool:
+        """Generic proposition: has the NPC seen a shape with this label?"""
+        return label in self.shape_locations
+
     # ── Observation processing ──────────────────────────────────
 
     def observe(self, cells: list[tuple[int, int, Shape | None]]):
         """
-        Process a batch of visible cells. This is the NPC's 'sense' step.
+        Process a batch of visible cells. This is the NPC's sense step.
         Only information within sight range gets recorded.
         """
         for x, y, shape in cells:
@@ -99,69 +110,32 @@ class RLangState:
                 self.shape_locations.setdefault(label, [])
                 self.shape_locations[label].append((x, y))
 
-                # Track uncollected blue circles for goal-seeking
-                if label == "blue_circle":
-                    self.known_blue_circle_positions.append((x, y))
-
-    def record_collection(self, shape: Shape):
-        """NPC collected a blue circle (its own goal)."""
-        self.blue_circles_collected += 1
-        pos = (shape.x, shape.y)
-        if pos in self.known_blue_circle_positions:
-            self.known_blue_circle_positions.remove(pos)
-
     # ── Serialization → LLM context ────────────────────────────
 
     def to_llm_context(self) -> list[str]:
-        """
-        Serialize the NPC's RLang-grounded knowledge into a list of
-        natural language strings. This is the handoff to the LLM.
-
-        Each string represents one piece of grounded knowledge.
-        The LLM team injects these into the system prompt.
-        """
+        """Serialize NPC knowledge into natural Skyrim vocabulary for LLM prompts."""
         lines: list[str] = []
 
-        # Identity and state
-        lines.append(f"[FACTOR] I am at position ({self.npc_pos[0]}, {self.npc_pos[1]}).")
-        lines.append(f"[FACTOR] I have explored {len(self.observed_cells)}/{self.world_size**2} cells ({self.coverage:.0%} of the world).")
+        current_location = get_natural_location_name(self.npc_pos[0], self.npc_pos[1])
+        lines.append(f"I am currently {current_location}.")
+        lines.append(f"I've explored {self.coverage:.0%} of this region during my travels.")
 
-        # Own goal progress
-        lines.append(f"[GOAL] I have collected {self.blue_circles_collected} blue circles.")
-        if self.known_blue_circle_positions:
-            for pos in self.known_blue_circle_positions:
-                lines.append(f"[GOAL] I know there is an uncollected blue circle at ({pos[0]}, {pos[1]}).")
-
-        # Propositions about exploration
         regions = self.explored_regions
         explored = [r for r, v in regions.items() if v]
         unexplored = [r for r, v in regions.items() if not v]
         if explored:
-            lines.append(f"[PROPOSITION] I have explored the {', '.join(explored)} region(s).")
+            lines.append(f"I have traveled through the {', '.join(explored)} area(s).")
         if unexplored:
-            lines.append(f"[PROPOSITION] I have NOT explored the {', '.join(unexplored)} region(s).")
+            lines.append(f"I have not yet ventured into the {', '.join(unexplored)} region(s).")
 
-        # Incidental observations (what the LLM would use to help the player)
         for label, positions in self.shape_locations.items():
-            if label == "blue_circle":
-                continue  # already covered under GOAL
-            display = label.replace("_", " ")
-            pos_str = ", ".join(f"({x},{y})" for x, y in positions)
-            lines.append(f"[OBSERVATION] I saw {display}(s) at: {pos_str}.")
+            natural_name = get_natural_object_name(label)
+            natural_locations = [get_natural_location_name(x, y) for x, y in positions]
 
-        # Key proposition for the player's quest
-        if self.seen_any_red_triangle:
-            locs = self.shape_locations["red_triangle"]
-            pos_str = ", ".join(f"({x},{y})" for x, y in locs)
-            lines.append(f"[PROPOSITION] I HAVE seen red triangle(s) at: {pos_str}.")
-        elif self.seen_any_triangle:
-            tri_labels = [k for k in self.shape_locations if "triangle" in k]
-            all_locs = []
-            for tl in tri_labels:
-                all_locs.extend(self.shape_locations[tl])
-            pos_str = ", ".join(f"({x},{y})" for x, y in all_locs)
-            lines.append(f"[PROPOSITION] I have seen triangles (but not red ones) near: {pos_str}.")
-        else:
-            lines.append("[PROPOSITION] I have not seen any triangles yet.")
+            if len(positions) == 1:
+                lines.append(f"I found a {natural_name} {natural_locations[0]}.")
+            else:
+                location_list = ", ".join(natural_locations)
+                lines.append(f"I've seen {len(positions)} {natural_name}s at: {location_list}.")
 
         return lines

@@ -4,8 +4,8 @@ from dataclasses import dataclass, field
 
 @dataclass
 class Shape:
-    color: str        # "red", "blue", "green", "yellow"
-    shape_type: str   # "triangle", "circle", "square"
+    color: str        # see config.COLORS
+    shape_type: str   # see config.SHAPES
     x: int
     y: int
     collected: bool = False
@@ -23,7 +23,8 @@ class Shape:
 class Player:
     x: int
     y: int
-
+    sight_range: int = 2
+    observed_cells: set = field(default_factory=set)
 
 @dataclass
 class NPC:
@@ -31,4 +32,6 @@ class NPC:
     y: int
     sight_range: int = 2
     steps_taken: int = 0
-    blue_circles_collected: int = 0
+    # goal_label is set when NPC_GOAL is active (e.g. "blue_circle").
+    # None means this NPC is a baseline wanderer with no goal.
+    goal_label: str | None = None

@@ -2,18 +2,21 @@
 import random
 from entities import Shape
 import config
+from entities import Player
 
 
 class GameWorld:
-    def __init__(self, seed=None):
+    def __init__(self, target_color: str, target_shape: str, seed=None):
         if seed is not None:
             random.seed(seed)
 
         self.size = config.GRID_SIZE
         self.shapes: list[Shape] = []
-        self._generate()
+        self.target_color = target_color
+        self.target_shape = target_shape
+        self._generate(target_color, target_shape)
 
-    def _generate(self):
+    def _generate(self, target_color: str, target_shape: str):
         """Place shapes randomly on the grid, avoiding collisions."""
         occupied = set()
 
@@ -21,11 +24,18 @@ class GameWorld:
         occupied.add(config.NPC_START)
         occupied.add(config.PLAYER_START)
 
+        # Add 1 target color, shape pair
+        pos = self._random_free_pos(occupied)
+        occupied.add(pos)
+        self.shapes.append(Shape(target_color, target_shape, pos[0], pos[1]))
+
         shape_specs = (
-            [("blue", "circle")] * config.NUM_BLUE_CIRCLES +
-            [("red", "triangle")] * config.NUM_RED_TRIANGLES +
-            [("green", "square")] * config.NUM_GREEN_SQUARES +
-            [("yellow", "triangle")] * config.NUM_YELLOW_TRIANGLES
+            [
+                (color, shape)
+                for color in config.COLORS
+                for shape in config.SHAPES
+                if not (color == target_color and shape == target_shape)
+            ]
         )
 
         for color, shape_type in shape_specs:
@@ -55,6 +65,11 @@ class GameWorld:
                 if 0 <= nx < self.size and 0 <= ny < self.size:
                     cells.append((nx, ny, self.shape_at(nx, ny)))
         return cells
+    
+    def update_player_vision(self, player: Player):
+        visible = self.get_visible_cells(player.x, player.y, player.sight_range)
+        for x, y, shape in visible:
+            player.observed_cells.add((x,y))
 
     def in_bounds(self, x: int, y: int) -> bool:
         return 0 <= x < self.size and 0 <= y < self.size
