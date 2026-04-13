@@ -19,6 +19,7 @@ from world import GameWorld
 from entities import Player, NPC
 from npc_brain import NPCBrainGoalDriven, NPCBrainWandering
 from interaction import InteractionManager
+from pygame_game_api import PygameGameAPI
 
 
 # ── Color palette for shapes ──────────────────────────────────
@@ -75,7 +76,7 @@ def _init_game(seed=None):
     else:
         brain = NPCBrainGoalDriven(npc, world, goal_label=goal_label)
 
-    interaction_manager = InteractionManager()
+    interaction_manager = InteractionManager(api=PygameGameAPI.from_game(world, player, brain))
 
     return world, player, npc, brain, interaction_manager
 

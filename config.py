@@ -57,6 +57,11 @@ NPC_OBSERVED_CELLS_VISIBLE = False # when False, NPC sight range and observed ce
 # "deterministic" | "llm" | "slm"
 NPC_RESPONSE_MODE = "deterministic"
 
+# NPC Knowledge Mode — the knowledge axis in the experiment matrix.
+# "embodied" → NPC only knows what it personally observed (realistic, default)
+# "perfect"  → NPC knows the full world state (omniscient baseline)
+NPC_KNOWLEDGE_MODE = "embodied"
+
 # NPC Goal — when False, NPC uses NPCBrainWandering (baseline).
 # When True, NPC uses NPCBrainGoalDriven with goal resolved as follows:
 #   NPC_COMPETING=True           → goal matches the player's target
