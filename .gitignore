@@ -1,0 +1,10 @@
+# venv
+2951X
+
+# .env
+.env
+
+# pycache
+__pycache__/
+*.py[cod]
+*$py.class
