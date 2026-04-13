@@ -18,7 +18,7 @@ import config
 from world import GameWorld
 from entities import Player, NPC
 from npc_brain import NPCBrainGoalDriven, NPCBrainWandering
-from interaction import InteractionManager
+from interaction import InteractionManager, reset_llm_log
 from pygame_game_api import PygameGameAPI
 
 
@@ -82,6 +82,7 @@ def _init_game(seed=None):
 
 
 def main():
+    reset_llm_log()
     pygame.init()
 
     grid_px = config.GRID_SIZE * config.CELL_PX

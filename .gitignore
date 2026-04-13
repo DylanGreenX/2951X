@@ -9,3 +9,6 @@
 __pycache__/
 *.py[cod]
 *$py.class
+
+# runtime logs
+llm_interactions.jsonl

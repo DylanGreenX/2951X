@@ -14,8 +14,8 @@ Usage pattern
 ─────────────
   1. Subclass GameAPIProvider and implement every abstract method.
   2. Pass your instance to InteractionManager (or your own dispatcher).
-  3. Pass GAME_TOOL_SCHEMAS to the LLM API's `tools=` parameter.
-  4. Dispatch incoming tool calls with dispatch_tool_call().
+  3. Convert GAME_TOOL_SCHEMAS to provider-native tool declarations.
+  4. Dispatch incoming function calls with dispatch_tool_call().
 """
 from __future__ import annotations
 
@@ -192,9 +192,10 @@ class GameAPIProvider(ABC):
 
 
 # ── LLM tool schemas ──────────────────────────────────────────────────────────
-# Pass GAME_TOOL_SCHEMAS directly to the `tools=` parameter of any OpenAI-
-# compatible API call. The descriptions tell the model *when* to call each
-# tool and what it will receive back.
+# GAME_TOOL_SCHEMAS uses an OpenAI-shaped function schema because it is compact
+# and provider-neutral. llm.LLMClient converts these declarations to Gemini
+# Tool objects before model calls. The descriptions tell the model when to call
+# each tool and what it will receive back.
 
 GAME_TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
@@ -353,6 +354,32 @@ GAME_TOOL_SCHEMAS: list[dict[str, Any]] = [
 ]
 
 
+EMBODIED_TOOL_NAMES = {
+    "get_world_info",
+    "get_npc_state",
+    "get_player_state",
+    "get_npc_memory",
+    "get_exploration_status",
+}
+
+
+def get_tool_schemas_for_knowledge_mode(is_embodied: bool) -> list[dict[str, Any]]:
+    """
+    Return tool schemas for the experiment's knowledge condition.
+
+    Embodied NPCs only receive tools that expose their own state, the player
+    state, quest metadata, and their personal observation memory. Full-world
+    lookup tools stay available only for perfect-knowledge baselines.
+    """
+    if not is_embodied:
+        return list(GAME_TOOL_SCHEMAS)
+    return [
+        schema
+        for schema in GAME_TOOL_SCHEMAS
+        if schema["function"]["name"] in EMBODIED_TOOL_NAMES
+    ]
+
+
 # ── Tool call dispatcher ───────────────────────────────────────────────────────
 
 def dispatch_tool_call(
@@ -362,19 +389,14 @@ def dispatch_tool_call(
 ) -> dict[str, Any]:
     """
     Execute a single LLM tool call against a GameAPIProvider and return the
-    result as a plain dict (ready to be JSON-serialised into a tool message).
+    result as a plain dict (ready for a provider-native tool response).
 
     Raises ValueError for unknown tool names so the caller can feed an error
     message back to the model rather than crashing.
 
-    Example usage inside an agentic loop
-    ─────────────────────────────────────
-        result = dispatch_tool_call(api, tc.function.name, json.loads(tc.function.arguments))
-        messages.append({
-            "role": "tool",
-            "tool_call_id": tc.id,
-            "content": json.dumps(result),
-        })
+    Example usage inside a provider loop
+    ────────────────────────────────────
+        result = dispatch_tool_call(api, function_call.name, function_call.args)
     """
     dispatch: dict[str, Any] = {
         "get_world_info":        lambda: api.get_world_info(),
@@ -400,4 +422,3 @@ def dispatch_tool_call(
         )
 
     return dispatch[tool_name]()
-

@@ -2,3 +2,5 @@ pygame>=2.6
 numpy>=2.0
 pandas>=2.0
 matplotlib>=3.8
+google-genai>=1.70
+python-dotenv>=1.2
