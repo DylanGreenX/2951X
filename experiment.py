@@ -15,6 +15,7 @@ from world import GameWorld
 from entities import Player, NPC
 from npc_brain import NPCBrainGoalDriven, NPCBrainWandering
 from interaction import InteractionManager
+from pygame_game_api import PygameGameAPI
 from rlang_engine import get_natural_object_name, extract_coordinates_from_text
 
 
@@ -26,9 +27,6 @@ class ExperimentCondition:
 
 
 class ExperimentRunner:
-
-    def __init__(self):
-        self.interaction_manager = InteractionManager()
 
     def run_condition(self, condition: ExperimentCondition, num_trials: int = 50) -> List[Dict[str, Any]]:
         print(f"Running {condition.name} ({num_trials} trials)...")
@@ -49,18 +47,25 @@ class ExperimentRunner:
         npc_knowledge = brain.state.to_llm_context().copy()
         target_label = f"{world.target_color}_{world.target_shape}"
         target_location = self._find_target_location(world, target_label)
+        interaction_manager = InteractionManager(
+            api=PygameGameAPI.from_game(world, player, brain),
+            enforce_grounding=False,
+        )
 
         original_mode = config.NPC_RESPONSE_MODE
+        original_knowledge_mode = config.NPC_KNOWLEDGE_MODE
         config.NPC_RESPONSE_MODE = condition.response_mode
+        config.NPC_KNOWLEDGE_MODE = condition.knowledge_mode
         try:
             question = self._create_natural_question(world.target_color, world.target_shape)
             start_time = time.perf_counter()
-            _, response_text = self.interaction_manager.start_interaction(
+            _, response_text = interaction_manager.start_interaction(
                 brain, world.target_color, world.target_shape
             )
             response_time_ms = (time.perf_counter() - start_time) * 1000
         finally:
             config.NPC_RESPONSE_MODE = original_mode
+            config.NPC_KNOWLEDGE_MODE = original_knowledge_mode
 
         metrics = self._evaluate_response(response_text, target_location, npc_knowledge)
 
@@ -69,6 +74,14 @@ class ExperimentRunner:
             'condition': condition.name,
             'question': question,
             'response_text': response_text,
+            'raw_response_text': interaction_manager.last_raw_response,
+            'final_response_text': interaction_manager.last_response,
+            'tool_calls': interaction_manager.last_tool_calls,
+            'grounding_violation': interaction_manager.last_grounding_violation,
+            'grounding_violations': interaction_manager.last_grounding_violations,
+            'token_usage': interaction_manager.last_token_usage,
+            'token_usage_total': interaction_manager.last_token_usage_total,
+            'llm_error': interaction_manager.last_llm_error,
             'response_time_ms': response_time_ms,
             'npc_steps': npc.steps_taken,
             'npc_coverage': brain.state.coverage,

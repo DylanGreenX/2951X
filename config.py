@@ -55,14 +55,26 @@ NPC_START = (1, 1)
 NPC_TICK_INTERVAL = 600      # ms between NPC steps
 NPC_OBSERVED_CELLS_VISIBLE = False # when False, NPC sight range and observed cells are not visible to player
 # "deterministic" | "llm" | "slm"
-NPC_RESPONSE_MODE = "deterministic"
+NPC_RESPONSE_MODE = "llm"
+NPC_LLM_MAX_TOOL_TURNS = 4
+NPC_LLM_MAX_OUTPUT_TOKENS = 128
+NPC_LLM_TEMPERATURE = 0.4
+NPC_LLM_TIMEOUT_MS = 30000
+NPC_ENFORCE_GROUNDING = PLAY_MODE
+NPC_LLM_LOG_ENABLED = True
+NPC_LLM_LOG_PATH = "llm_interactions.jsonl"
+
+# NPC Knowledge Mode — the knowledge axis in the experiment matrix.
+# "embodied" → NPC only knows what it personally observed (realistic, default)
+# "perfect"  → NPC knows the full world state (omniscient baseline)
+NPC_KNOWLEDGE_MODE = "embodied"
 
 # NPC Goal — when False, NPC uses NPCBrainWandering (baseline).
 # When True, NPC uses NPCBrainGoalDriven with goal resolved as follows:
 #   NPC_COMPETING=True           → goal matches the player's target
 #   NPC_GOAL_DETERMINISTIC=True  → use NPC_GOAL_COLOR + NPC_GOAL_SHAPE
 #   NPC_GOAL_DETERMINISTIC=False → random goal, guaranteed != player target
-NPC_GOAL = False
+NPC_GOAL = True
 NPC_GOAL_DETERMINISTIC = True
 NPC_GOAL_COLOR = "blue"
 NPC_GOAL_SHAPE = "circle"
