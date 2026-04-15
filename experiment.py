@@ -16,7 +16,9 @@ from entities import Player, NPC
 from npc_brain import NPCBrainGoalDriven, NPCBrainWandering
 from interaction import InteractionManager
 from pygame_game_api import PygameGameAPI
-from rlang_engine import get_natural_object_name, extract_coordinates_from_text
+from rlang_engine import get_natural_object_name
+import metrics
+import judge
 
 
 @dataclass
@@ -41,7 +43,7 @@ class ExperimentRunner:
         world, player, npc, brain = self._init_trial(trial, condition.knowledge_mode)
 
         if condition.knowledge_mode == "embodied":
-            for _ in range(150):
+            for _ in range(config.NPC_EXPLORATION_TICKS):
                 brain.tick()
 
         npc_knowledge = brain.state.to_llm_context().copy()
@@ -67,7 +69,9 @@ class ExperimentRunner:
             config.NPC_RESPONSE_MODE = original_mode
             config.NPC_KNOWLEDGE_MODE = original_knowledge_mode
 
-        metrics = self._evaluate_response(response_text, target_location, npc_knowledge)
+        metrics_dict = self._evaluate_response(
+            response_text, brain, world, target_label, target_location
+        )
 
         return {
             'trial': trial,
@@ -90,7 +94,7 @@ class ExperimentRunner:
             'target_was_observed': brain.state.seen_label(target_label),
             'knowledge_mode': condition.knowledge_mode,
             'response_mode': condition.response_mode,
-            **metrics
+            **metrics_dict
         }
 
     def _init_trial(self, seed: int, knowledge_mode: str):
@@ -121,38 +125,70 @@ class ExperimentRunner:
                 return (shape.x, shape.y)
         return None
 
-    def _evaluate_response(self, response: str, target_location: tuple, npc_knowledge: List[str]) -> Dict[str, float]:
-        return {
-            'accuracy': self._eval_accuracy(response, target_location),
-            'relevance': self._eval_relevance(response, target_location),
-            'groundedness': self._eval_groundedness(response, npc_knowledge),
+    def _evaluate_response(
+        self,
+        response: str,
+        brain,
+        world,
+        target_label: str,
+        target_location: tuple | None,
+    ) -> Dict[str, Any]:
+        """
+        Structural, claim-level scoring stratified by whether the NPC
+        actually observed the target. See metrics.py for the category
+        definitions and the per-sentence partition used to disambiguate
+        query claims from distractor chatter.
+        """
+        observed = brain.state.shape_locations
+        target_was_observed = brain.state.seen_label(target_label)
+
+        outcome = metrics.classify_outcome(
+            response, target_label, target_was_observed, target_location
+        )
+        grounded = metrics.score_groundedness(response, target_label, observed)
+        relevance = metrics.score_relevance(response, target_label)
+
+        bucket = outcome["outcome_bucket"]
+        result: Dict[str, Any] = {
+            # Regex scoring — the fast path
+            "outcome_bucket": bucket,
+            "chebyshev_distance": outcome["chebyshev_distance"],
+            "had_mixed_content": outcome["had_mixed_content"],
+            "groundedness_rate": grounded["rate"],
+            "n_claims": grounded["n_claims"],
+            "n_grounded": grounded["n_grounded"],
+            "n_shape_confusion": grounded["n_shape_confusion"],
+            "n_fabricated": grounded["n_fabricated"],
+            "on_topic": relevance["on_topic"],
+            "committal": relevance["committal"],
+            "false_refusal": bucket == "false_refusal",
         }
 
-    def _eval_accuracy(self, response: str, target_location: tuple) -> float:
-        if target_location is None:
-            negative_indicators = ["haven't seen", "don't know", "haven't found", "not seen"]
-            return 1.0 if any(ind in response.lower() for ind in negative_indicators) else 0.0
-        mentioned_coords = extract_coordinates_from_text(response)
-        return 1.0 if target_location in mentioned_coords else 0.0
-
-    def _eval_relevance(self, response: str, target_location: tuple) -> float:
-        if target_location is None:
-            return 1.0 if any(word in response.lower() for word in ["haven't", "don't", "not", "no"]) else 0.0
-        if target_location in extract_coordinates_from_text(response):
-            return 1.0
-        if any(word in response.lower() for word in ["near", "by", "outside", "area", "around", "close"]):
-            return 0.5
-        if any(word in response.lower() for word in ["seen", "found", "spotted"]):
-            return 0.3
-        return 0.0
-
-    def _eval_groundedness(self, response: str, npc_knowledge: List[str]) -> float:
-        response_coords = extract_coordinates_from_text(response)
-        knowledge_coords = extract_coordinates_from_text(" ".join(npc_knowledge))
-        if not response_coords:
-            return 1.0
-        grounded = sum(1 for coord in response_coords if coord in knowledge_coords)
-        return grounded / len(response_coords)
+        # Optional LLM judge — dual-logged with regex so we can compute
+        # per-bucket agreement and surface the cases where they disagree.
+        if getattr(config, "NPC_USE_LLM_JUDGE", False):
+            j = judge.classify(
+                response, target_label, target_location,
+                target_was_observed, observed,
+                model=getattr(config, "NPC_JUDGE_MODEL", "gemini-2.5-flash"),
+            )
+            j_bucket = j.get("outcome_bucket", "judge_error")
+            result.update({
+                "judge_bucket":          j_bucket,
+                "judge_chebyshev":       j.get("chebyshev_distance"),
+                "judge_had_mixed":       j.get("had_mixed_content"),
+                "judge_on_topic":        j.get("on_topic"),
+                "judge_committal":       j.get("committal"),
+                "judge_n_claims":        j.get("n_claims"),
+                "judge_n_grounded":      j.get("n_grounded"),
+                "judge_n_shape_conf":    j.get("n_shape_confusion"),
+                "judge_n_fabricated":    j.get("n_fabricated"),
+                "judge_groundedness":    j.get("groundedness_rate"),
+                "judge_reasoning":       j.get("reasoning"),
+                "judge_error":           j.get("judge_error"),
+                "regex_judge_agree":     j_bucket == bucket,
+            })
+        return result
 
 
 CORE_CONDITIONS = [
@@ -188,4 +224,4 @@ def run_core_experiments(num_trials: int = 50, response_filter: str = None) -> p
 if __name__ == "__main__":
     results = run_core_experiments(num_trials=5, response_filter="deterministic")
     print("Sample results:")
-    print(results[['condition', 'response_time_ms', 'accuracy', 'target_was_observed']].head())
+    print(results[['condition', 'response_time_ms', 'outcome_bucket', 'target_was_observed']].head())

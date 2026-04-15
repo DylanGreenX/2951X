@@ -50,9 +50,27 @@ NATURAL_LOCATIONS = {
 }
 
 # NPC
-NPC_SIGHT_RANGE = 2          # observes (2*r+1)x(2*r+1) = 5x5 window
+NPC_SIGHT_RANGE = 1          # observes (2*r+1)x(2*r+1) = 3x3 window
 NPC_START = (1, 1)
 NPC_TICK_INTERVAL = 600      # ms between NPC steps
+NPC_EXPLORATION_TICKS = 40   # ticks the brain runs before being asked (experiment)
+
+# Knowledge-acquisition modalities — applied inside RLangState.observe().
+# Composable with each other and with NPC_COMPETING.
+#
+# NPC_MEMORY_DECAY_TICKS: if int, shapes first seen more than N ticks ago
+#   are culled from memory every observation step. None disables.
+# NPC_SELECTIVE_ATTENTION: "color" matches NPC_GOAL_COLOR, "shape" matches
+#   NPC_GOAL_SHAPE; non-matching shapes are ignored at observation time.
+#   None disables.
+NPC_MEMORY_DECAY_TICKS: int | None = None
+NPC_SELECTIVE_ATTENTION: str | None = None  # "color" | "shape" | None
+
+# Response scoring — when True, the experiment runs an LLM-based judge in
+# addition to the regex metrics and dual-logs both. Judge model defaults to
+# gemini-2.5-flash (different tier than the agent for independence).
+NPC_USE_LLM_JUDGE = False
+NPC_JUDGE_MODEL = "gemini-2.5-flash"
 NPC_OBSERVED_CELLS_VISIBLE = False # when False, NPC sight range and observed cells are not visible to player
 # "deterministic" | "llm" | "slm"
 NPC_RESPONSE_MODE = "llm"

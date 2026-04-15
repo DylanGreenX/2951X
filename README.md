@@ -29,9 +29,9 @@ strings that get injected into an LLM prompt.
 
 - `NPCBrainWandering` — baseline random exploration, no goal
 - `NPCBrainGoalDriven` — pursues a configurable target greedily
-- `MemoryDecayNPCBrain` — observations fade over time (LLM/SLM only)
-- `SelectiveAttentionNPCBrain` — only notices one attribute (LLM/SLM only)
-- `CompetitiveNPCBrain` — withholds info from player (LLM/SLM only)
+
+All behavioral modalities are driven by config flags rather than subclasses,
+so they compose freely. See the "Configuring experiments" section below.
 
 ### Response Generation (`interaction.py`)
 
@@ -148,6 +148,29 @@ Each trial captures:
 - **Groundedness** — does the response stay within NPC's actual knowledge?
 
 Naturalness will be evaluated separately via subjective human rating.
+
+### Configuring experiments
+
+Each trial is defined by two axes on `ExperimentCondition` plus a set of
+global config flags read from `config.py` at trial time.
+
+| Axis | Where | Values | Notes |
+|---|---|---|---|
+| `knowledge_mode` | `ExperimentCondition` | `"perfect"` \| `"embodied"` | Per-condition |
+| `response_mode` | `ExperimentCondition` | `"deterministic"` \| `"llm"` \| `"slm"` | Per-condition |
+| `NPC_COMPETING` | `config.py` | `bool` | Global — NPC withholds / redirects on target |
+| `NPC_SELECTIVE_ATTENTION` | `config.py` | `"color"` \| `"shape"` \| `None` | Global — only records shapes matching `NPC_GOAL_COLOR` / `NPC_GOAL_SHAPE` |
+| `NPC_MEMORY_DECAY_TICKS` | `config.py` | `int` \| `None` | Global — observations older than N ticks are culled |
+| `NPC_EXPLORATION_TICKS` | `config.py` | `int` | Pre-question exploration budget in embodied mode |
+| `NPC_SIGHT_RANGE` | `config.py` | `int` | Half-width of the NPC's observation window |
+| `NPC_USE_LLM_JUDGE` | `config.py` | `bool` | Dual-log a Gemini Flash judge alongside regex scoring |
+| `NPC_JUDGE_MODEL` | `config.py` | model id | Judge model (default `gemini-2.5-flash`) |
+
+The three modality flags (`NPC_COMPETING`, `NPC_SELECTIVE_ATTENTION`,
+`NPC_MEMORY_DECAY_TICKS`) compose. To vary them per-condition instead of
+globally, extend `ExperimentCondition` with those fields and save/restore
+the config values in `ExperimentRunner._run_trial` the way
+`NPC_RESPONSE_MODE` and `NPC_KNOWLEDGE_MODE` already are.
 
 ## Running
 

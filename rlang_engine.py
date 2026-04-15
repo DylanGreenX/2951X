@@ -68,6 +68,10 @@ class RLangState:
     # e.g. {"red_triangle": [(5,12)], "blue_circle": [(3,7), (8,2)]}
     shape_locations: dict[str, list[tuple[int, int]]] = field(default_factory=dict)
 
+    # Tick when each shape location was first recorded — drives memory decay.
+    # Keyed by (x, y) since shape_locations already uses coord as identity.
+    shape_first_tick: dict[tuple[int, int], int] = field(default_factory=dict)
+
     # ── Propositions (boolean beliefs) ──────────────────────────
 
     @property
@@ -97,18 +101,57 @@ class RLangState:
 
     # ── Observation processing ──────────────────────────────────
 
-    def observe(self, cells: list[tuple[int, int, Shape | None]]):
+    def observe(
+        self,
+        cells: list[tuple[int, int, Shape | None]],
+        current_step: int | None = None,
+    ):
         """
         Process a batch of visible cells. This is the NPC's sense step.
         Only information within sight range gets recorded.
+
+        Modality hooks (applied when the corresponding config flag is set):
+          - NPC_SELECTIVE_ATTENTION: skip shapes whose color/shape_type does
+            not match the configured goal attribute. Cells are still marked
+            visited so exploration coverage is unaffected.
+          - NPC_MEMORY_DECAY_TICKS: requires current_step; shapes first seen
+            more than N ticks before current_step are culled after recording.
         """
+        attention = getattr(config, "NPC_SELECTIVE_ATTENTION", None)
+        goal_color = getattr(config, "NPC_GOAL_COLOR", None)
+        goal_shape = getattr(config, "NPC_GOAL_SHAPE", None)
+
         for x, y, shape in cells:
             self.observed_cells.add((x, y))
-            if shape is not None and shape not in self.observed_shapes:
-                self.observed_shapes.append(shape)
-                label = shape.label
-                self.shape_locations.setdefault(label, [])
-                self.shape_locations[label].append((x, y))
+            if shape is None or shape in self.observed_shapes:
+                continue
+            if attention == "color" and shape.color != goal_color:
+                continue
+            if attention == "shape" and shape.shape_type != goal_shape:
+                continue
+            self.observed_shapes.append(shape)
+            self.shape_locations.setdefault(shape.label, []).append((x, y))
+            if current_step is not None:
+                self.shape_first_tick[(x, y)] = current_step
+
+        decay = getattr(config, "NPC_MEMORY_DECAY_TICKS", None)
+        if decay is not None and current_step is not None:
+            self._apply_decay(current_step, decay)
+
+    def _apply_decay(self, current_step: int, decay_ticks: int) -> None:
+        """Drop shapes first seen more than decay_ticks ago."""
+        cutoff = current_step - decay_ticks
+        stale = {loc for loc, t in self.shape_first_tick.items() if t <= cutoff}
+        if not stale:
+            return
+        self.observed_shapes = [
+            s for s in self.observed_shapes if (s.x, s.y) not in stale
+        ]
+        self.shape_locations = {}
+        for s in self.observed_shapes:
+            self.shape_locations.setdefault(s.label, []).append((s.x, s.y))
+        for loc in stale:
+            self.shape_first_tick.pop(loc, None)
 
     # ── Serialization → LLM context ────────────────────────────
 
