@@ -31,23 +31,62 @@ NATURAL_OBJECTS = {
     "blue_circle": "soul gem",
     "green_square": "alchemy ingredient"
 }
-NATURAL_LOCATIONS = {
-    (0,0): "the tavern", (0,1): "near the blacksmith", (0,2): "by the forge",
-    (1,0): "market square", (1,1): "by the temple", (1,2): "temple steps",
-    (2,0): "watchtower", (2,1): "outside the inn", (2,2): "inn courtyard",
-    (3,0): "alchemy shop", (3,1): "near the stables", (3,2): "stable yard",
-    (4,0): "guard barracks", (4,1): "by the well", (4,2): "town center",
-    (5,0): "city gate", (5,1): "near the walls", (5,2): "outer district",
-    (6,0): "main road", (6,1): "crossroads", (6,2): "merchant quarter",
-    (7,0): "old bridge", (7,1): "riverside", (7,2): "fishing spot",
-    (8,0): "windmill", (8,1): "grain fields", (8,2): "farmhouse",
-    (9,0): "ancient ruins", (9,1): "stone circle", (9,2): "burial ground",
-    (10,0): "forest edge", (10,1): "hunting grounds", (10,2): "ranger camp",
-    (11,0): "mountain path", (11,1): "rocky outcrop", (11,2): "cave entrance",
-    (12,0): "northern gate", (12,1): "guard post", (12,2): "watchtower base",
-    (13,0): "eastern border", (13,1): "trade route", (13,2): "caravan stop",
-    (14,0): "southern outpost", (14,1): "frontier settlement", (14,2): "wilderness edge"
-}
+NATURAL_LOCATIONS = {}
+
+for x in range(15):
+    for y in range(15):
+        # --- TOWN REGION (Top Left) ---
+        if x < 5 and y < 6:
+            if x < 3 and y < 3:
+                loc = "the tavern square"
+            elif x >= 3 and y < 3:
+                loc = "near the north gate"
+            else:
+                loc = "the merchant quarter"
+        
+        # --- FARM & WINDMILL REGION (Top Right) ---
+        elif x >= 10 and y < 5:
+            if x > 12:
+                loc = "the sheep pastures"
+            else:
+                loc = "near the windmill"
+
+        # --- THE RIVER (Central Vertical Strip) ---
+        elif 6 <= x <= 8 and y < 11:
+            if y == 4 or y == 5:
+                loc = "the river bridge"
+            else:
+                loc = "the riverside"
+
+        # --- THE SWAMP (Bottom Left) ---
+        elif x < 7 and y >= 9:
+            if y < 11:
+                loc = "the north swamp edge"
+            elif y > 13:
+                loc = "the south swamp edge"
+            else:
+                loc = "the deep swamp"
+
+        # --- MOUNTAINS & VOLCANO (Bottom Right) ---
+        elif x >= 10 and y >= 8:
+            if x >= 13 and y >= 13:
+                loc = "the dragon's lair"
+            elif 10 <= x <= 12 and 10 <= y <= 12:
+                loc = "the volcanic crater"
+            else:
+                loc = "the mountain peaks"
+
+        # --- RUINS & FOREST (Center/Eastern areas) ---
+        elif x >= 9 and 5 <= y <= 7:
+            loc = "the ancient stone circle"
+        elif x < 10 and y >= 6:
+            loc = "the dark forest"
+            
+        # --- DEFAULT FALLBACK ---
+        else:
+            loc = "the wilderness"
+
+        NATURAL_LOCATIONS[(x, y)] = loc
 
 # NPC
 NPC_SIGHT_RANGE = 2          # observes (2*r+1)x(2*r+1) = 5x5 window
@@ -105,3 +144,4 @@ NPC_COLOR = (255, 200, 50)
 PLAYER_COLOR = (255, 255, 255)
 TEXT_COLOR = (200, 200, 200)
 HIGHLIGHT_COLOR = (100, 200, 255)
+BG_IMAGE_PATH = "bg.png"

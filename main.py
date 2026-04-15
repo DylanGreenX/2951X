@@ -89,6 +89,14 @@ def main():
     win_w = grid_px + config.SIDEBAR_W
     win_h = config.TOP_BAR_H + grid_px + config.HUD_H
     screen = pygame.display.set_mode((win_w, win_h))
+    
+    try:
+        bg_img = pygame.image.load("bg.png").convert()
+        bg_surface = pygame.transform.scale(bg_img, (grid_px, grid_px))
+    except Exception as e:
+        print(f"Could not load background.png: {e}")
+        bg_surface = None
+        
     pygame.display.set_caption("RLang NPC Demo — Needle in a Haystack")
     clock = pygame.time.Clock()
 
@@ -165,6 +173,9 @@ def main():
         # ── Draw ──
         screen.fill(config.BG_COLOR)
         _draw_top_bar(screen, font_big, npc, brain, world)
+        ox, oy = _grid_origin()
+        if bg_surface:
+            screen.blit(bg_surface, (ox, oy))
         _draw_grid(screen, world, brain, npc, player, font)
         _draw_sidebar(screen, font_title, font, brain, event_log, grid_px)
         _draw_hud(screen, font_title, font, brain, grid_px, win_w)
