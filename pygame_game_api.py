@@ -39,6 +39,7 @@ from game_api_interface import (
     ObjectDict,
     PlayerStateDict,
     PositionDict,
+    SetNPCTargetDict,
     WorldInfoDict,
 )
 from npc_brain import NPCBrain
@@ -247,5 +248,44 @@ class PygameGameAPI(GameAPIProvider):
                 for s in self.world.shapes
                 if not s.collected
             ]
+        }
+
+    def set_npc_target(self, npc_id: str, x: int, y: int) -> SetNPCTargetDict:
+        """
+        Command the NPC to navigate to (x, y) one step at a time.
+
+        Validates that the npc_id exists and the coordinates are within the
+        world bounds before calling set_target_pos on the brain. Returns
+        success=False with a descriptive message if either check fails.
+        """
+        if npc_id not in self.brains:
+            return {
+                "npc_id": npc_id,
+                "target_position": {"x": x, "y": y},
+                "success": False,
+                "message": (
+                    f"Unknown npc_id {npc_id!r}. "
+                    f"Registered IDs: {list(self.brains)}"
+                ),
+            }
+
+        if not self.world.in_bounds(x, y):
+            return {
+                "npc_id": npc_id,
+                "target_position": {"x": x, "y": y},
+                "success": False,
+                "message": (
+                    f"Target ({x}, {y}) is out of bounds. "
+                    f"World size is {self.world.size}x{self.world.size} "
+                    f"(valid range: 0 to {self.world.size - 1})."
+                ),
+            }
+
+        self.brains[npc_id].set_target_pos((x, y))
+        return {
+            "npc_id": npc_id,
+            "target_position": {"x": x, "y": y},
+            "success": True,
+            "message": f"NPC {npc_id!r} is now navigating to ({x}, {y}).",
         }
 
