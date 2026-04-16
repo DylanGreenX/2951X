@@ -32,6 +32,8 @@ NATURAL_OBJECTS = {
     "green_square": "alchemy ingredient"
 }
 NATURAL_LOCATIONS = {
+    # TODO Change locations to be a range, e.g. from (0,0) to (2,2), create method to get natural name for a given position.
+    # TODO Finally, change how LLM is given info, currently passed a string of all objects with coordinates -> change to tool calls
     # (0,0): "the tavern", (0,1): "near the blacksmith", (0,2): "by the forge",
     # (1,0): "market square", (1,1): "by the temple", (1,2): "temple steps",
     # (2,0): "watchtower", (2,1): "outside the inn", (2,2): "inn courtyard",
