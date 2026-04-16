@@ -98,6 +98,14 @@ class AllObjectsDict(TypedDict):
     objects: list[ObjectDict]
 
 
+class SetNPCTargetDict(TypedDict):
+    """Result of issuing a movement target to an NPC."""
+    npc_id: str
+    target_position: PositionDict
+    success: bool
+    message: str
+
+
 # ── Abstract base class ───────────────────────────────────────────────────────
 
 class GameAPIProvider(ABC):
@@ -187,6 +195,18 @@ class GameAPIProvider(ABC):
         observations. This is *perfect-knowledge mode* — call only when
         running the omniscient NPC baseline condition. Never use this to
         generate embodied NPC responses.
+        """
+        ...
+
+    @abstractmethod
+    def set_npc_target(self, npc_id: str, x: int, y: int) -> SetNPCTargetDict:
+        """
+        Command the NPC to autonomously navigate to grid position (x, y).
+        The NPC will step one cell at a time toward the target each game tick
+        until it arrives, then resume its default behaviour. Use when you want
+        the NPC to physically move to a location — for example, to lead the
+        player to a known object, investigate a position, or reposition before
+        speaking again.
         """
         ...
 
@@ -351,6 +371,39 @@ GAME_TOOL_SCHEMAS: list[dict[str, Any]] = [
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_npc_target",
+            "description": (
+                "Commands the NPC to autonomously navigate to a specific grid position. "
+                "The NPC will pathfind toward (x, y), moving one step per game tick, and "
+                "will resume its default behaviour once it arrives. "
+                "Use this to make the NPC physically move — for example, to lead the player "
+                "to a known object, investigate a location, or reposition itself before "
+                "continuing a conversation. Only call this when deliberate NPC movement is "
+                "appropriate; do not call it simply to report information."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "npc_id": {
+                        "type": "string",
+                        "description": "The NPC identifier, e.g. 'npc_0'.",
+                    },
+                    "x": {
+                        "type": "integer",
+                        "description": "Target grid X coordinate (0 to world_size - 1).",
+                    },
+                    "y": {
+                        "type": "integer",
+                        "description": "Target grid Y coordinate (0 to world_size - 1).",
+                    },
+                },
+                "required": ["npc_id", "x", "y"],
+            },
+        },
+    },
 ]
 
 
@@ -360,6 +413,7 @@ EMBODIED_TOOL_NAMES = {
     "get_player_state",
     "get_npc_memory",
     "get_exploration_status",
+    "set_npc_target",
 }
 
 
@@ -381,6 +435,69 @@ def get_tool_schemas_for_knowledge_mode(is_embodied: bool) -> list[dict[str, Any
 
 
 # ── Tool call dispatcher ───────────────────────────────────────────────────────
+
+def get_natural_position_name(x: int, y: int, world_size: int) -> str:
+    """
+    Convert a grid position into a human-readable location description.
+
+    Divides the world into a 3×3 region grid (corners, edges, centre) and
+    adds a proximity qualifier ("deep in", "near the edge of") based on how
+    close the position is to the nearest border.
+
+    Examples
+    ────────
+        get_natural_position_name(1, 1, 20)   → "the far northwest corner"
+        get_natural_position_name(10, 10, 20) → "the centre"
+        get_natural_position_name(10, 2, 20)  → "the northern edge"
+        get_natural_position_name(3, 14, 20)  → "the western side, toward the south"
+    """
+    # Normalise to [0.0, 1.0]
+    fx = x / max(world_size - 1, 1)
+    fy = y / max(world_size - 1, 1)
+
+    # Horizontal band
+    if fx < 0.33:
+        h_band = "west"
+    elif fx > 0.66:
+        h_band = "east"
+    else:
+        h_band = "centre"
+
+    # Vertical band  (y=0 is top/north in grid coords)
+    if fy < 0.33:
+        v_band = "north"
+    elif fy > 0.66:
+        v_band = "south"
+    else:
+        v_band = "centre"
+
+    # Proximity to the nearest border (0 = at edge, 0.5 = dead centre)
+    border_proximity = min(fx, 1 - fx, fy, 1 - fy)
+    if border_proximity < 0.08:
+        qualifier = "the far "
+    elif border_proximity < 0.2:
+        qualifier = "the "
+    else:
+        qualifier = "the "   # dropped for centre region below
+
+    # Compose the description
+    if h_band == "centre" and v_band == "centre":
+        if border_proximity >= 0.2:
+            return "the centre"
+        return "near the centre"
+
+    if h_band == "centre":
+        edge = "northern" if v_band == "north" else "southern"
+        return f"{qualifier}{edge} edge"
+
+    if v_band == "centre":
+        edge = "western" if h_band == "west" else "eastern"
+        return f"{qualifier}{edge} side"
+
+    # Corner
+    direction = f"{v_band}{h_band}"   # e.g. "northwest"
+    far = border_proximity < 0.08
+    return f"{'the far ' if far else 'the '}{direction} corner"
 
 def dispatch_tool_call(
     api: GameAPIProvider,
@@ -414,6 +531,11 @@ def dispatch_tool_call(
         "get_exploration_status": lambda: api.get_exploration_status(arguments["npc_id"]),
         "get_object_at":         lambda: api.get_object_at(arguments["x"], arguments["y"]),
         "get_all_objects":       lambda: api.get_all_objects(),
+        "set_npc_target":        lambda: api.set_npc_target(
+                                     arguments["npc_id"],
+                                     arguments["x"],
+                                     arguments["y"],
+                                 ),
     }
 
     if tool_name not in dispatch:
