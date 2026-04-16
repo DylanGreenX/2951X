@@ -17,6 +17,7 @@ from npc_brain import NPCBrainGoalDriven, NPCBrainWandering
 from interaction import InteractionManager
 from pygame_game_api import PygameGameAPI
 from rlang_engine import get_natural_object_name
+from game_log import GameLogger
 import metrics
 import judge
 
@@ -42,9 +43,24 @@ class ExperimentRunner:
     def _run_trial(self, condition: ExperimentCondition, trial: int) -> Dict[str, Any]:
         world, player, npc, brain = self._init_trial(trial, condition.knowledge_mode)
 
+        # One log per trial. Tag captures both condition axes so the
+        # on-disk run_id is self-describing.
+        tag = f"experiment_{condition.knowledge_mode}_{condition.response_mode}_trial{trial}"
+        logger = GameLogger.start(
+            world, player, npc, brain,
+            tag=tag, seed=trial,
+            extra_meta={
+                "condition_name": condition.name,
+                "knowledge_mode": condition.knowledge_mode,
+                "response_mode": condition.response_mode,
+                "trial": trial,
+            },
+        )
+
         if condition.knowledge_mode == "embodied":
             for _ in range(config.NPC_EXPLORATION_TICKS):
                 brain.tick()
+                logger.log_tick(world, player, npc, brain)
 
         npc_knowledge = brain.state.to_llm_context().copy()
         target_label = f"{world.target_color}_{world.target_shape}"
@@ -60,17 +76,36 @@ class ExperimentRunner:
         config.NPC_KNOWLEDGE_MODE = condition.knowledge_mode
         try:
             question = self._create_natural_question(world.target_color, world.target_shape)
+            interaction_id = logger.log_interaction_pre(
+                world, player, npc, brain, world.target_color, world.target_shape
+            )
             start_time = time.perf_counter()
             _, response_text = interaction_manager.start_interaction(
                 brain, world.target_color, world.target_shape
             )
             response_time_ms = (time.perf_counter() - start_time) * 1000
+            logger.log_interaction_summary(
+                interaction_id, interaction_manager, brain, world,
+                world.target_color, world.target_shape,
+                question, response_text,
+            )
         finally:
             config.NPC_RESPONSE_MODE = original_mode
             config.NPC_KNOWLEDGE_MODE = original_knowledge_mode
 
         metrics_dict = self._evaluate_response(
             response_text, brain, world, target_label, target_location
+        )
+
+        logger.end(
+            outcome="experiment_complete",
+            extra_stats={
+                "npc_steps": npc.steps_taken,
+                "npc_coverage": round(brain.state.coverage, 4),
+                "target_was_observed": brain.state.seen_label(target_label),
+                "outcome_bucket": metrics_dict.get("outcome_bucket"),
+                "response_time_ms": response_time_ms,
+            },
         )
 
         return {
@@ -94,6 +129,7 @@ class ExperimentRunner:
             'target_was_observed': brain.state.seen_label(target_label),
             'knowledge_mode': condition.knowledge_mode,
             'response_mode': condition.response_mode,
+            'run_id': logger.run_id,
             **metrics_dict
         }
 

@@ -18,8 +18,9 @@ import config
 from world import GameWorld
 from entities import Player, NPC
 from npc_brain import NPCBrainGoalDriven, NPCBrainWandering
-from interaction import InteractionManager, reset_llm_log
+from interaction import InteractionManager
 from pygame_game_api import PygameGameAPI
+from game_log import GameLogger
 
 
 # ── Color palette for shapes ──────────────────────────────────
@@ -55,8 +56,16 @@ def _resolve_npc_goal(target_color: str, target_shape: str) -> str | None:
     return random.choice(choices)
 
 
-def _init_game(seed=None):
-    """Create a fresh world, player, NPC, and brain. Returns (world, player, npc, brain)."""
+def _init_game(seed=None, prev_logger: GameLogger | None = None):
+    """Create a fresh world, player, NPC, brain, interaction manager, and game logger.
+
+    If ``prev_logger`` is passed (e.g. on reset), it is ended first so its
+    summary.json is written and ``config.NPC_LLM_LOG_PATH`` is restored
+    before we start a new run.
+    """
+    if prev_logger is not None:
+        prev_logger.end(outcome="reset")
+
     if config.DETERMINISTIC_TARGET:
         target_color, target_shape = config.TARGET_COLOR, config.TARGET_SHAPE
     else:
@@ -66,7 +75,7 @@ def _init_game(seed=None):
     world = GameWorld(target_color=target_color, target_shape=target_shape, seed=seed)
 
     player = Player(*config.PLAYER_START, sight_range=config.PLAYER_SIGHT_RANGE)
-    world.update_player_vision(player)  # populate initial sight cone immediately
+    world.update_player_vision(player)
 
     npc = NPC(*config.NPC_START, sight_range=config.NPC_SIGHT_RANGE)
 
@@ -78,11 +87,14 @@ def _init_game(seed=None):
 
     interaction_manager = InteractionManager(api=PygameGameAPI.from_game(world, player, brain))
 
-    return world, player, npc, brain, interaction_manager
+    # Start the run log. GameLogger retargets config.NPC_LLM_LOG_PATH so all
+    # LLM events auto-flow into the per-run game.jsonl for auditing.
+    logger = GameLogger.start(world, player, npc, brain, tag="play", seed=seed)
+
+    return world, player, npc, brain, interaction_manager, logger
 
 
 def main():
-    reset_llm_log()
     pygame.init()
 
     grid_px = config.GRID_SIZE * config.CELL_PX
@@ -96,7 +108,7 @@ def main():
     font_big = pygame.font.SysFont("consolas", 18, bold=True)
     font_title = pygame.font.SysFont("consolas", 14, bold=True)
 
-    world, player, npc, brain, interaction_manager = _init_game(seed=42)
+    world, player, npc, brain, interaction_manager, logger = _init_game(seed=42)
 
     # Event log (notable things that happened)
     event_log: list[str] = []
@@ -108,6 +120,7 @@ def main():
 
     last_npc_tick = pygame.time.get_ticks()
     running = True
+    outcome = "quit"
 
     while running:
         now = pygame.time.get_ticks()
@@ -118,17 +131,17 @@ def main():
                 running = False
             elif event.type == pygame.KEYDOWN:
                 if in_interaction:
-                    # ESC or ENTER dismisses the dialogue and resumes the game
                     if event.key in (pygame.K_ESCAPE, pygame.K_RETURN):
                         in_interaction = False
                 else:
                     if event.key == pygame.K_ESCAPE:
                         running = False
                     elif event.key == pygame.K_r:
-                        world, player, npc, brain, interaction_manager = _init_game()
+                        world, player, npc, brain, interaction_manager, logger = (
+                            _init_game(prev_logger=logger)
+                        )
                         event_log.clear()
                         in_interaction = False
-                    # Player movement
                     dx, dy = 0, 0
                     if event.key == pygame.K_UP:
                         dy = -1
@@ -142,14 +155,24 @@ def main():
                     if world.in_bounds(nx, ny):
                         player.x, player.y = nx, ny
                         world.update_player_vision(player)
+                        logger.log_tick(world, player, npc, brain)
                         # Auto-trigger interaction when player steps onto NPC
                         if interaction_manager.can_interact(player, npc):
+                            interaction_id = logger.log_interaction_pre(
+                                world, player, npc, brain,
+                                world.target_color, world.target_shape,
+                            )
                             interaction_question, interaction_response = (
                                 interaction_manager.start_interaction(
                                     brain,
                                     world.target_color,
                                     world.target_shape,
                                 )
+                            )
+                            logger.log_interaction_summary(
+                                interaction_id, interaction_manager, brain, world,
+                                world.target_color, world.target_shape,
+                                interaction_question, interaction_response,
                             )
                             in_interaction = True
 
@@ -160,6 +183,7 @@ def main():
                 event_log.append(result)
                 if len(event_log) > 8:
                     event_log.pop(0)
+            logger.log_tick(world, player, npc, brain, event_msg=result)
             last_npc_tick = now
 
         # ── Draw ──
@@ -176,6 +200,15 @@ def main():
         pygame.display.flip()
         clock.tick(config.FPS)
 
+    logger.end(
+        outcome=outcome,
+        extra_stats={
+            "npc_steps": npc.steps_taken,
+            "npc_coverage": round(brain.state.coverage, 4),
+            "player_pos": [player.x, player.y],
+            "npc_pos": [npc.x, npc.y],
+        },
+    )
     pygame.quit()
     sys.exit()
 

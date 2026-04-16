@@ -80,7 +80,13 @@ NPC_LLM_TEMPERATURE = 0.4
 NPC_LLM_TIMEOUT_MS = 30000
 NPC_ENFORCE_GROUNDING = PLAY_MODE
 NPC_LLM_LOG_ENABLED = True
+# Fallback LLM event log path. GameLogger retargets this per run so LLM
+# events flow into the run's game.jsonl; this value is only used if a run
+# log has not been started (e.g. during unit tests or ad-hoc scripts).
 NPC_LLM_LOG_PATH = "llm_interactions.jsonl"
+# Root directory for per-run game logs. Each run creates a subdirectory
+# here containing game.jsonl (events) and summary.json (outcome).
+GAME_LOG_DIR = "logs/runs"
 
 # NPC Knowledge Mode — the knowledge axis in the experiment matrix.
 # "embodied" → NPC only knows what it personally observed (realistic, default)
