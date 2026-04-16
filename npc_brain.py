@@ -27,6 +27,12 @@ class NPCBrain:
         self.state = RLangState(world_size=world.size)
         self._recent_positions: list[tuple[int, int]] = []
         self._max_recent = 10
+        self.has_target = False
+        self.target_pos = None
+
+    def set_target_pos(self, target_pos: tuple[int, int] | None) -> None:
+        self.target_pos = target_pos
+        self.has_target = target_pos is not None
 
     def tick(self) -> str | None:
         raise NotImplementedError
@@ -53,6 +59,27 @@ class NPCBrain:
         self._recent_positions.append((self.npc.x, self.npc.y))
         if len(self._recent_positions) > self._max_recent:
             self._recent_positions.pop(0)
+
+        # Check if we have reached the pathfinding target
+        if self.has_target and (self.npc.x, self.npc.y) == self.target_pos:
+            self.set_target_pos(None)
+
+    def _direction_toward_pos(self, target: tuple[int, int]) -> str:
+        """Return the next step direction toward an (x, y) position."""
+        dx = target[0] - self.npc.x
+        dy = target[1] - self.npc.y
+
+        options: list[str] = []
+        if dx > 0:
+            options.append("right")
+        elif dx < 0:
+            options.append("left")
+        if dy > 0:
+            options.append("down")
+        elif dy < 0:
+            options.append("up")
+
+        return random.choice(options) if options else random.choice(["up", "down", "left", "right"])
 
     def _observe(self) -> None:
         visible = self.world.get_visible_cells(
@@ -100,6 +127,8 @@ class NPCBrainWandering(NPCBrain):
         return None
 
     def _choose_direction(self) -> str:
+        if self.has_target and self.target_pos is not None:
+            return self._direction_toward_pos(self.target_pos)
         return self._explore_direction()
 
 
@@ -146,9 +175,11 @@ class NPCBrainGoalDriven(NPCBrain):
         return None
 
     def _choose_direction(self) -> str:
+        if self.has_target and self.target_pos is not None:
+            return self._direction_toward_pos(self.target_pos)
         target = self._nearest_known_target()
         if target:
-            return self._direction_toward(target)
+            return self._direction_toward_pos(target)
         return self._explore_direction()
 
     def _sync_known_targets(self) -> None:
@@ -176,22 +207,6 @@ class NPCBrainGoalDriven(NPCBrain):
                 best_dist = d
                 best = pos
         return best
-
-    def _direction_toward(self, target: tuple[int, int]) -> str:
-        dx = target[0] - self.npc.x
-        dy = target[1] - self.npc.y
-
-        options = []
-        if dx > 0:
-            options.append("right")
-        elif dx < 0:
-            options.append("left")
-        if dy > 0:
-            options.append("down")
-        elif dy < 0:
-            options.append("up")
-
-        return random.choice(options) if options else random.choice(["up", "down", "left", "right"])
 
 
 # Extended brain types for LLM/SLM experiments only.
