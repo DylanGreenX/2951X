@@ -33,6 +33,26 @@ NATURAL_OBJECTS = {
 }
 NATURAL_LOCATIONS = {}
 
+SHAPE_ASSETS = {
+    "blue_circle":   f"images/soul_gem.png",
+    "red_circle":    f"images/gem_crimson.png",
+    "green_circle":  f"images/gem_emerald.png",
+    "purple_circle": f"images/gem_amethyst.png",
+    "yellow_circle": f"images/gem_golden.png",
+
+    "red_triangle":    f"images/flag_crimson.png",
+    "blue_triangle":   f"images/flag_sapphire.png",
+    "green_triangle":  f"images/flag_emerald.png",
+    "purple_triangle": f"images/flag_amethyst.png",
+    "yellow_triangle": f"images/flag_golden.png",
+
+    "green_square":  f"images/alchemy_ingredient.png",
+    "red_square":    f"images/rune_crimson.png",
+    "blue_square":   f"images/rune_sapphire.png",
+    "purple_square": f"images/rune_amethyst.png",
+    "yellow_square": f"images/rune_golden.png",
+}
+
 for x in range(15):
     for y in range(15):
         # --- TOWN REGION (Top Left) ---
@@ -138,10 +158,10 @@ FPS = 30
 # Colors
 BG_COLOR = (30, 30, 35)
 GRID_LINE_COLOR = (50, 50, 55)
-FOG_COLOR = (20, 20, 25, 180)
-SEEN_TINT = (255, 255, 255, 18)
+FOG_COLOR = (10, 10, 15, 255)
+SEEN_TINT = (10, 10, 15, 100)
 NPC_COLOR = (255, 200, 50)
 PLAYER_COLOR = (255, 255, 255)
 TEXT_COLOR = (200, 200, 200)
 HIGHLIGHT_COLOR = (100, 200, 255)
-BG_IMAGE_PATH = "bg.png"
+BG_IMAGE_PATH = "images/bg.png"

@@ -91,11 +91,35 @@ def main():
     screen = pygame.display.set_mode((win_w, win_h))
     
     try:
-        bg_img = pygame.image.load("bg.png").convert()
+        bg_img = pygame.image.load(config.BG_IMAGE_PATH).convert()
         bg_surface = pygame.transform.scale(bg_img, (grid_px, grid_px))
-    except Exception as e:
-        print(f"Could not load background.png: {e}")
+    except:
         bg_surface = None
+        
+    asset_pixel_size = int(config.CELL_PX * 0.75) 
+    loaded_shapes = {}
+    for label, path in config.SHAPE_ASSETS.items():
+        try:
+            img = pygame.image.load(path).convert_alpha()
+            loaded_shapes[label] = pygame.transform.scale(img, (asset_pixel_size, asset_pixel_size))
+        except Exception as e:
+            print(f"Missing asset: {path}")
+            loaded_shapes[label] = None
+
+    entity_px = int(config.CELL_PX)
+    try:
+        npc_img = pygame.image.load("images/npc.png").convert_alpha()
+        npc_img = pygame.transform.scale(npc_img, (entity_px, entity_px))
+    except Exception:
+        print("Missing asset: images/npc.png")
+        npc_img = None
+
+    try:
+        player_img = pygame.image.load("images/player.png").convert_alpha()
+        player_img = pygame.transform.scale(player_img, (entity_px, entity_px))
+    except Exception:
+        print("Missing asset: images/player.png")
+        player_img = None
         
     pygame.display.set_caption("RLang NPC Demo — Needle in a Haystack")
     clock = pygame.time.Clock()
@@ -176,7 +200,7 @@ def main():
         ox, oy = _grid_origin()
         if bg_surface:
             screen.blit(bg_surface, (ox, oy))
-        _draw_grid(screen, world, brain, npc, player, font)
+        _draw_grid(screen, world, brain, npc, player, font, loaded_shapes, bg_surface, npc_img, player_img)
         _draw_sidebar(screen, font_title, font, brain, event_log, grid_px)
         _draw_hud(screen, font_title, font, brain, grid_px, win_w)
         if in_interaction:
@@ -212,108 +236,80 @@ def _draw_top_bar(screen, font, npc, brain, world):
     screen.blit(surf, (12, 15))
 
 
-def _draw_grid(screen, world, brain, npc, player, font):
-    """Draw the grid, shapes, fog of war, NPC, and player."""
+def _draw_grid(screen, world, brain, npc, player, font, loaded_shapes, bg_surface, npc_img=None, player_img=None):
     ox, oy = _grid_origin()
 
-    # Grid lines
+    # --- 1. PREPARE CONSTANTS & SURFACES ---
+    r = config.PLAYER_SIGHT_RANGE
+    spotlight_x = range(player.x - r, player.x + r + 1)
+    spotlight_y = range(player.y - r, player.y + r + 1)
+
+    # Fog surface (unseen)
+    fog_surf = pygame.Surface((config.CELL_PX, config.CELL_PX), pygame.SRCALPHA)
+    fog_surf.fill(config.FOG_COLOR) 
+    
+    # Dim surface (seen/memory)
+    dim_surf = pygame.Surface((config.CELL_PX, config.CELL_PX), pygame.SRCALPHA)
+    dim_surf.fill(config.SEEN_TINT) 
+
+    # --- 2. PASS 1: THE FLOOR (Background + Grid lines) ---
+    if bg_surface:
+        screen.blit(bg_surface, (ox, oy))
+
+    # Grid Lines
     for i in range(config.GRID_SIZE + 1):
         px = ox + i * config.CELL_PX
         pygame.draw.line(screen, config.GRID_LINE_COLOR, (px, oy), (px, oy + config.GRID_SIZE * config.CELL_PX))
         py = oy + i * config.CELL_PX
         pygame.draw.line(screen, config.GRID_LINE_COLOR, (ox, py), (ox + config.GRID_SIZE * config.CELL_PX, py))
 
-    # Fog of war + seen tint
-    fog_surf = pygame.Surface((config.CELL_PX, config.CELL_PX), pygame.SRCALPHA)
-    fog_surf.fill(config.FOG_COLOR)
-    seen_surf = pygame.Surface((config.CELL_PX, config.CELL_PX), pygame.SRCALPHA)
-    seen_surf.fill(config.SEEN_TINT)
-
-    for gx in range(config.GRID_SIZE):
-        for gy in range(config.GRID_SIZE):
-            px = ox + gx * config.CELL_PX
-            py = oy + gy * config.CELL_PX
-            if (gx, gy) in player.observed_cells:
-                screen.blit(seen_surf, (px, py))
-            elif (config.NPC_OBSERVED_CELLS_VISIBLE or not config.PLAY_MODE) and (gx, gy) in brain.state.observed_cells:
-                screen.blit(seen_surf, (px, py))
-            else:
-                screen.blit(fog_surf, (px, py))
-
-    # NPC sight range highlight
-    if config.NPC_OBSERVED_CELLS_VISIBLE or not config.PLAY_MODE:
-        sr = npc.sight_range
-        sight_surf = pygame.Surface((config.CELL_PX, config.CELL_PX), pygame.SRCALPHA)
-        sight_surf.fill((255, 200, 50, 25))
-        for dx in range(-sr, sr + 1):
-            for dy in range(-sr, sr + 1):
-                gx, gy = npc.x + dx, npc.y + dy
-                if 0 <= gx < config.GRID_SIZE and 0 <= gy < config.GRID_SIZE:
-                    px = ox + gx * config.CELL_PX
-                    py = oy + gy * config.CELL_PX
-                    screen.blit(sight_surf, (px, py))
-    
-    # Player sight range highlight
-    sr = player.sight_range
-    sight_surf = pygame.Surface((config.CELL_PX, config.CELL_PX), pygame.SRCALPHA)
-    sight_surf.fill((200, 220, 255, 100))
-    for dx in range(-sr, sr + 1):
-        for dy in range(-sr, sr + 1):
-            gx, gy = player.x + dx, player.y + dy
-            if 0 <= gx < config.GRID_SIZE and 0 <= gy < config.GRID_SIZE:
-                px = ox + gx * config.CELL_PX
-                py = oy + gy * config.CELL_PX
-                screen.blit(sight_surf, (px, py))
-
-    # Shapes
+    # --- 3. PASS 2: THE OBJECTS (Icons) — all at full opacity ---
     for shape in world.shapes:
         if shape.collected:
             continue
-        px = ox + shape.x * config.CELL_PX + config.CELL_PX // 2
-        py = oy + shape.y * config.CELL_PX + config.CELL_PX // 2
-        color = SHAPE_COLORS[shape.color]
-        r = config.CELL_PX // 3
-        if (config.PLAY_MODE and (shape.x, shape.y) in player.observed_cells) or not config.PLAY_MODE or (config.NPC_OBSERVED_CELLS_VISIBLE and (shape.x, shape.y) in brain.state.observed_cells):
-            if shape.shape_type == "circle":
-                pygame.draw.circle(screen, color, (px, py), r)
-                pygame.draw.circle(screen, (255, 255, 255), (px, py), r, 2)
-            elif shape.shape_type == "triangle":
-                pts = [
-                    (px, py - r),
-                    (px - r, py + r),
-                    (px + r, py + r),
-                ]
-                pygame.draw.polygon(screen, color, pts)
-                pygame.draw.polygon(screen, (255, 255, 255), pts, 2)
-            elif shape.shape_type == "square":
-                rect = pygame.Rect(px - r, py - r, r * 2, r * 2)
-                pygame.draw.rect(screen, color, rect)
-                pygame.draw.rect(screen, (255, 255, 255), rect, 2)
+        if (shape.x, shape.y) in player.observed_cells:
+            label = f"{shape.color}_{shape.shape_type}"
+            img = loaded_shapes.get(label)
+            if img:
+                ix = ox + shape.x * config.CELL_PX + (config.CELL_PX - img.get_width()) // 2
+                iy = oy + shape.y * config.CELL_PX + (config.CELL_PX - img.get_height()) // 2
+                screen.blit(img, (ix, iy))
 
-    # NPC — diamond shape
-    npx = ox + npc.x * config.CELL_PX + config.CELL_PX // 2
-    npy = oy + npc.y * config.CELL_PX + config.CELL_PX // 2
-    d = config.CELL_PX // 3
-    npc_pts = [(npx, npy - d), (npx + d, npy), (npx, npy + d), (npx - d, npy)]
-    pygame.draw.polygon(screen, config.NPC_COLOR, npc_pts)
-    pygame.draw.polygon(screen, (255, 255, 255), npc_pts, 2)
-    # Label
-    label = font.render("NPC", True, config.NPC_COLOR)
-    screen.blit(label, (npx - label.get_width() // 2, npy - d - 14))
+    # --- 4. PASS 3: ENTITIES (NPC and Player) — all at full opacity ---
+    # Draw NPC
+    if (npc.x, npc.y) in player.observed_cells or not config.PLAY_MODE:
+        if npc_img:
+            ix = ox + npc.x * config.CELL_PX + (config.CELL_PX - npc_img.get_width()) // 2
+            iy = oy + npc.y * config.CELL_PX + (config.CELL_PX - npc_img.get_height()) // 2
+            screen.blit(npc_img, (ix, iy))
+        else:
+            npx = ox + npc.x * config.CELL_PX + config.CELL_PX // 2
+            npy = oy + npc.y * config.CELL_PX + config.CELL_PX // 2
+            d = config.CELL_PX // 3
+            pygame.draw.polygon(screen, config.NPC_COLOR, [(npx, npy - d), (npx + d, npy), (npx, npy + d), (npx - d, npy)])
+            pygame.draw.polygon(screen, (255, 255, 255), [(npx, npy - d), (npx + d, npy), (npx, npy + d), (npx - d, npy)], 2)
 
-    # Player — filled square with cross
-    ppx = ox + player.x * config.CELL_PX + config.CELL_PX // 2
-    ppy = oy + player.y * config.CELL_PX + config.CELL_PX // 2
-    pr = config.CELL_PX // 3
-    prect = pygame.Rect(ppx - pr, ppy - pr, pr * 2, pr * 2)
-    pygame.draw.rect(screen, config.PLAYER_COLOR, prect)
-    pygame.draw.rect(screen, (100, 100, 100), prect, 2)
-    # Cross marker
-    pygame.draw.line(screen, (0, 0, 0), (ppx - pr//2, ppy), (ppx + pr//2, ppy), 2)
-    pygame.draw.line(screen, (0, 0, 0), (ppx, ppy - pr//2), (ppx, ppy + pr//2), 2)
-    label = font.render("YOU", True, config.PLAYER_COLOR)
-    screen.blit(label, (ppx - label.get_width() // 2, ppy - pr - 14))
+    # Draw Player
+    if player_img:
+        ix = ox + player.x * config.CELL_PX + (config.CELL_PX - player_img.get_width()) // 2
+        iy = oy + player.y * config.CELL_PX + (config.CELL_PX - player_img.get_height()) // 2
+        screen.blit(player_img, (ix, iy))
+    else:
+        ppx = ox + player.x * config.CELL_PX + config.CELL_PX // 2
+        ppy = oy + player.y * config.CELL_PX + config.CELL_PX // 2
+        pr = config.CELL_PX // 3
+        pygame.draw.rect(screen, config.PLAYER_COLOR, (ppx - pr, ppy - pr, pr * 2, pr * 2))
+        pygame.draw.rect(screen, (100, 100, 100), (ppx - pr, ppy - pr, pr * 2, pr * 2), 2)
 
+    # --- 5. PASS 4: FOG OVERLAYS — applied last so they tint everything uniformly ---
+    for gx in range(config.GRID_SIZE):
+        for gy in range(config.GRID_SIZE):
+            px, py = ox + gx * config.CELL_PX, oy + gy * config.CELL_PX
+            if not (gx in spotlight_x and gy in spotlight_y):
+                if (gx, gy) in player.observed_cells:
+                    screen.blit(dim_surf, (px, py))   # memory tint
+                else:
+                    screen.blit(fog_surf, (px, py))   # full fog
 
 def _draw_sidebar(screen, font_title, font, brain, event_log, grid_px):
     """Right sidebar: legend + event log."""
