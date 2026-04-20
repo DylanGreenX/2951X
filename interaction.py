@@ -91,7 +91,7 @@ class InteractionManager:
         self._reset_trace()
         label = f"{target_color}_{target_shape}"
         natural_name = get_natural_object_name(label)
-        question = f"Where is the {natural_name}?"
+        question = f"Please show me where the {natural_name} is."
 
         if config.NPC_RESPONSE_MODE == "deterministic":
             response = self.get_deterministic_response(brain, target_color, target_shape)
@@ -254,6 +254,7 @@ class InteractionManager:
                 "Never fabricate or guess at locations you have not visited. "
                 "Use the get_npc_memory tool to consult your observations and "
                 "get_exploration_status to acknowledge the limits of what you know."
+                "Use the set_npc_target tool to navigate to the target location. "
             )
         else:
             knowledge_instruction = (
@@ -278,6 +279,8 @@ class InteractionManager:
             f"known in local speech as the {target_natural_name}.\n"
             f"Your NPC identifier is {npc_id!r}. Use it when calling NPC-specific tools.\n"
             "Respond in 1–2 sentences, in character."
+            "If the player asks you to show where something is, use the set_npc_target tool call to navigate there."
+            "Do not ask for confirmation or any follow up questions.."
         )
 
     def _build_messages(

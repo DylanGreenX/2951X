@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
+import config
 
 load_dotenv()
 
@@ -24,7 +25,7 @@ class LLMClient:
         client: genai.Client | None = None,
         timeout_ms: int | None = None,
     ) -> None:
-        self.model = model or os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+        self.model = model or os.getenv("GEMINI_MODEL", config.DEFAULT_GEMINI_MODEL)
         self.timeout_ms = timeout_ms or int(os.getenv("GEMINI_TIMEOUT_MS", "30000"))
         try:
             self.client = client or genai.Client()

@@ -136,6 +136,8 @@ def main():
                 else:
                     if event.key == pygame.K_ESCAPE:
                         running = False
+                    elif event.key == pygame.K_p:
+                        brain.set_target_pos((player.x,player.y))
                     elif event.key == pygame.K_r:
                         world, player, npc, brain, interaction_manager, logger = (
                             _init_game(prev_logger=logger)
