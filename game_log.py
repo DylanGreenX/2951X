@@ -439,9 +439,13 @@ class GameLogger:
                 "objects": dict(config.NATURAL_OBJECTS),
                 "colors": dict(config.NATURAL_COLORS),
                 "shapes": dict(config.NATURAL_SHAPES),
+                # Location naming is now region-based — serialize the full
+                # cell→region map for this world so replay tools can resolve
+                # any cell without re-running get_natural_position_name.
                 "locations": {
-                    f"{x},{y}": name
-                    for (x, y), name in config.NATURAL_LOCATIONS.items()
+                    f"{x},{y}": self._natural_location_name(x, y)
+                    for x in range(world.size)
+                    for y in range(world.size)
                 },
             },
             "npc": {
@@ -521,8 +525,8 @@ class GameLogger:
 
     @staticmethod
     def _natural_location_name(x: int, y: int) -> str:
-        from rlang_engine import get_natural_location_name
-        return get_natural_location_name(x, y)
+        from game_api_interface import get_natural_position_name
+        return get_natural_position_name(x, y, config.GRID_SIZE)
 
     @classmethod
     def _json_safe(cls, value: Any) -> Any:

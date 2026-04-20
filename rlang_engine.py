@@ -13,9 +13,24 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from entities import Shape
+from game_api_interface import get_natural_position_name
 import config
 
-_LOCATION_TO_COORDS = {v: k for k, v in config.NATURAL_LOCATIONS.items()}
+
+# All region phrases get_natural_position_name can produce. Used by
+# extract_regions_from_text so metrics can score region-level answers
+# without re-implementing the naming logic.
+_REGION_PHRASES: tuple[str, ...] = (
+    "the far northwest corner", "the northwest corner",
+    "the far northeast corner", "the northeast corner",
+    "the far southwest corner", "the southwest corner",
+    "the far southeast corner", "the southeast corner",
+    "the far northern edge", "the northern edge",
+    "the far southern edge", "the southern edge",
+    "the far western side", "the western side",
+    "the far eastern side", "the eastern side",
+    "near the centre", "the centre",
+)
 
 
 def get_natural_object_name(label: str) -> str:
@@ -27,19 +42,35 @@ def get_natural_object_name(label: str) -> str:
     return label.replace('_', ' ')
 
 
-def get_natural_location_name(x: int, y: int) -> str:
-    return config.NATURAL_LOCATIONS.get((x, y), f"coordinates ({x}, {y})")
-
-
 def extract_coordinates_from_text(text: str) -> list:
-    """Extract coordinates from both explicit format and natural location names."""
-    coords = []
-    for x, y in re.findall(r'\((\d+),\s*(\d+)\)', text):
-        coords.append((int(x), int(y)))
-    for location, coord in _LOCATION_TO_COORDS.items():
-        if location.lower() in text.lower():
-            coords.append(coord)
-    return coords
+    """Extract literal (x, y) coordinates from text."""
+    return [(int(x), int(y)) for x, y in re.findall(r'\((\d+),\s*(\d+)\)', text)]
+
+
+def extract_regions_from_text(text: str) -> set[str]:
+    """
+    Return the set of region phrases present in text. Longest-first matching so
+    'the far northwest corner' wins over 'the northwest corner'.
+    """
+    lower = text.lower()
+    found: set[str] = set()
+    consumed: list[tuple[int, int]] = []
+    for phrase in sorted(_REGION_PHRASES, key=len, reverse=True):
+        idx = 0
+        while (idx := lower.find(phrase, idx)) != -1:
+            span = (idx, idx + len(phrase))
+            if any(s <= span[0] < e or s < span[1] <= e for s, e in consumed):
+                idx = span[1]
+                continue
+            found.add(phrase)
+            consumed.append(span)
+            idx = span[1]
+    return found
+
+
+def region_of(x: int, y: int, world_size: int) -> str:
+    """Canonical region phrase for a cell — the region an answer must match."""
+    return get_natural_position_name(x, y, world_size)
 
 
 @dataclass
@@ -159,8 +190,10 @@ class RLangState:
         """Serialize NPC knowledge into natural Skyrim vocabulary for LLM prompts."""
         lines: list[str] = []
 
-        current_location = get_natural_location_name(self.npc_pos[0], self.npc_pos[1])
-        lines.append(f"I am currently {current_location}.")
+        current_region = get_natural_position_name(
+            self.npc_pos[0], self.npc_pos[1], self.world_size
+        )
+        lines.append(f"I am currently in {current_region}.")
         lines.append(f"I've explored {self.coverage:.0%} of this region during my travels.")
 
         regions = self.explored_regions
@@ -173,12 +206,14 @@ class RLangState:
 
         for label, positions in self.shape_locations.items():
             natural_name = get_natural_object_name(label)
-            natural_locations = [get_natural_location_name(x, y) for x, y in positions]
+            natural_locations = [
+                get_natural_position_name(x, y, self.world_size) for x, y in positions
+            ]
 
             if len(positions) == 1:
-                lines.append(f"I found a {natural_name} {natural_locations[0]}.")
+                lines.append(f"I found a {natural_name} in {natural_locations[0]}.")
             else:
                 location_list = ", ".join(natural_locations)
-                lines.append(f"I've seen {len(positions)} {natural_name}s at: {location_list}.")
+                lines.append(f"I've seen {len(positions)} {natural_name}s in: {location_list}.")
 
         return lines

@@ -1,17 +1,32 @@
 """
 Response scoring — structural metrics for groundedness, relevance, accuracy.
 
-Operates on the NPC's observed memory (brain.state.shape_locations) rather
-than keyword heuristics, so "I saw a purple dragon at (3,3)" is flagged as
-fabricated even when (3,3) happens to appear in memory for another shape.
+Operates on the NPC's observed memory plus (when available) the LLM tool-call
+trace. Now that main's rework pushes the LLM toward calling `set_npc_target`
+instead of emitting coordinates, a single response can carry up to three
+independent accuracy signals, any of which can be canonically "correct":
+
+  1. Action         — the LLM called set_npc_target on the target cell.
+  2. Literal coord  — the response text contains the literal (tx, ty).
+  3. Region phrase  — the response mentions the region get_natural_position_name
+                      produces for the target cell, on-topic, with no refusal.
+
+Naturalness is scored separately (judge only) — a coord-dumping NPC can be
+technically correct (signal 2) while scoring low on naturalness, and a
+set_npc_target-plus-flavor-text NPC can be correct (signal 1) and natural.
 
 All functions are pure — no I/O, no state — for easy unit testing.
 """
 from __future__ import annotations
 import re
+from typing import Any, Iterable
 
 import config
-from rlang_engine import extract_coordinates_from_text
+from rlang_engine import (
+    extract_coordinates_from_text,
+    extract_regions_from_text,
+    region_of,
+)
 
 
 # Up to 3 intervening words keeps "haven't personally seen" matching while
@@ -35,9 +50,8 @@ REFUSAL_PATTERNS = [
 ]
 
 _REFUSAL_RE = re.compile("|".join(REFUSAL_PATTERNS), re.IGNORECASE)
-# Also split on contrastive connectives ("..., but ...", "..., though ...")
-# so an NPC-position landmark in one clause does not pollute a target refusal
-# in the next, when both share one sentence without terminal punctuation.
+# Split on terminal punctuation AND contrastive connectives so a landmark in a
+# self-narration clause does not pollute a target refusal in the next clause.
 _SENTENCE_RE = re.compile(
     r"[.!?]+\s*|,\s+(?:but|though|however|yet)\s+",
     re.IGNORECASE,
@@ -47,17 +61,39 @@ _SENTENCE_RE = re.compile(
 # ── Primitives ────────────────────────────────────────────────
 
 def extract_coords(text: str) -> list[tuple[int, int]]:
-    """
-    Coords committed in text — both literal (x,y) and resolved landmark names
-    (e.g. "near the blacksmith" → (0,1)). Landmark resolution is required
-    because the deterministic baseline emits landmark phrases, not coord
-    literals, when describing observed shape locations.
-    """
+    """Literal (x, y) coordinates committed in text."""
     return list(extract_coordinates_from_text(text))
 
 
+def extract_regions(text: str) -> set[str]:
+    """Canonical region phrases mentioned in text."""
+    return extract_regions_from_text(text)
+
+
+def extract_tool_action(tool_calls: Iterable[dict[str, Any]] | None) -> tuple[int, int] | None:
+    """Return the (x, y) from the LAST successful set_npc_target call, or None.
+
+    Consumes the interaction_manager.last_tool_calls trace format: each entry
+    is a dict with 'name' and 'arguments' keys (plus 'result' / 'error').
+    Multiple calls in one interaction are unusual but legal; we take the last
+    so a self-correcting model isn't penalized for its first guess.
+    """
+    if not tool_calls:
+        return None
+    for call in reversed(list(tool_calls)):
+        if call.get("name") != "set_npc_target":
+            continue
+        if call.get("error"):
+            continue
+        args = call.get("arguments") or {}
+        x, y = args.get("x"), args.get("y")
+        if isinstance(x, int) and isinstance(y, int):
+            return (x, y)
+    return None
+
+
 def split_sentences(text: str) -> list[str]:
-    """Split on . ? ! for per-sentence classification."""
+    """Split on . ? ! and contrastive connectives for per-sentence classification."""
     return [s.strip() for s in _SENTENCE_RE.split(text) if s.strip()]
 
 
@@ -137,13 +173,11 @@ def _query_aliases(query_label: str) -> list[str]:
 
 
 def _mentions_query(text: str, query_label: str) -> bool:
-    """True if any alias of query_label appears as a substring."""
     lower = text.lower()
     return any(alias.lower() in lower for alias in _query_aliases(query_label))
 
 
 def _mentions_any_distractor(text: str, query_label: str) -> bool:
-    """True if any non-query shape's natural-name alias appears in text."""
     for color in config.COLORS:
         for shape in config.SHAPES:
             label = f"{color}_{shape}"
@@ -154,6 +188,36 @@ def _mentions_any_distractor(text: str, query_label: str) -> bool:
     return False
 
 
+# ── Region cell enumeration (cached) ──────────────────────────
+
+_REGION_CELL_CACHE: dict[tuple[str, int], set[tuple[int, int]]] = {}
+
+
+def cells_in_region(region_phrase: str, world_size: int) -> set[tuple[int, int]]:
+    """All cells whose canonical region is this phrase. Cached by (phrase, size)."""
+    key = (region_phrase, world_size)
+    cached = _REGION_CELL_CACHE.get(key)
+    if cached is not None:
+        return cached
+    cells = {
+        (x, y)
+        for x in range(world_size)
+        for y in range(world_size)
+        if region_of(x, y, world_size) == region_phrase
+    }
+    _REGION_CELL_CACHE[key] = cells
+    return cells
+
+
+def _chebyshev_to_target(
+    cells: set[tuple[int, int]], target: tuple[int, int]
+) -> int | None:
+    if not cells:
+        return None
+    tx, ty = target
+    return min(max(abs(x - tx), abs(y - ty)) for x, y in cells)
+
+
 # ── Outcome classification ────────────────────────────────────
 
 def classify_outcome(
@@ -161,37 +225,58 @@ def classify_outcome(
     query_label: str,
     target_was_observed: bool,
     target_location: tuple[int, int] | None,
+    *,
+    tool_calls: Iterable[dict[str, Any]] | None = None,
+    world_size: int | None = None,
 ) -> dict:
     """
-    Aggregate the response into one outcome bucket:
+    Classify into one outcome bucket using the strongest available signal.
 
-        correct             target observed, target coord committed
-        confabulation       target observed, on-topic coord committed, wrong
-        false_refusal       target observed, explicit refusal, no target coord
-        hallucination       target not observed, on-topic coord committed
-        correct_abstention  target not observed, explicit refusal
-        off_topic           response neither commits a target-relevant coord
-                            nor refuses the target
+    Signal priority
+    ───────────────
+    1. Action (`set_npc_target`) if present — most authoritative because it is
+       what the NPC physically does, not what it says.
+    2. Literal coord committed on-topic — the legacy deterministic-mode path.
+    3. Region phrase mentioned on-topic, matching target's canonical region.
 
-    had_mixed_content flags responses that refuse AND commit a non-target
-    coord (e.g. grounded distractor claim + correct abstention on target) —
-    an interesting pattern lost when only the primary bucket is reported.
+    Any one of those resolving to the target cell yields `correct`. Wrong
+    commits (via any signal) route to `confabulation` (target observed) or
+    `hallucination` (not observed).
 
-    chebyshev_distance is reported only for confabulation bucket.
+    Backwards-compatible: callers that omit `tool_calls` and `world_size` get
+    the old coord-only behaviour for (2), skipping (1) and (3).
+
+    Extra returned fields
+    ─────────────────────
+        correct_via  one of {"action", "coord", "region", None} — which
+                     signal resolved the accuracy call, for per-condition
+                     breakdowns in analysis.
     """
-    # Per-sentence partition: coords inside a sentence that mentions the
-    # query are treated as claims about the query. Coords in other sentences
-    # are treated as distractor chatter and do not drive the outcome bucket.
+    # ── Signal 1: action ─────────────────────────────────────────────────
+    action_cell = extract_tool_action(tool_calls)
+
+    # ── Signal 3 preparation: regions ────────────────────────────────────
+    target_region = (
+        region_of(*target_location, world_size)
+        if target_location and world_size is not None
+        else None
+    )
+    response_regions = extract_regions(response) if response else set()
+
+    # ── Signal 2 preparation: per-sentence coord partition (legacy) ──────
     coords_on_topic: list[tuple[int, int]] = []
     coords_off_topic: list[tuple[int, int]] = []
+    regions_on_topic: set[str] = set()
     refused_target = refused_ambient = False
 
     for sent in split_sentences(response):
         sent_coords = extract_coords(sent)
+        sent_regions = extract_regions(sent)
         mentions_q = _mentions_query(sent, query_label)
         is_ref = is_refusal(sent)
         if mentions_q:
             coords_on_topic.extend(sent_coords)
+            regions_on_topic.update(sent_regions)
             refused_target = refused_target or is_ref
         else:
             coords_off_topic.extend(sent_coords)
@@ -199,48 +284,82 @@ def classify_outcome(
 
     refused = refused_target or refused_ambient
 
-    # Anaphora pass: when the response mentions the query, names no distractor,
-    # and contains no refusal, any coord in a non-query-mentioning sentence is
-    # an anaphoric reference to the query ("it", "there") — not distractor
-    # chatter. Promote those coords so classify_outcome treats them as claims.
-    # Example: "Ah, the crimson flag ye seek! I recall seeing it at (3, 9)."
+    # Anaphora: response names query, no distractor, no refusal → promote
+    # off-topic coords/regions ("I saw it at (3, 9)") to on-topic.
     if (
-        coords_off_topic
+        (coords_off_topic or (response_regions - regions_on_topic))
         and _mentions_query(response, query_label)
         and not refused
         and not _mentions_any_distractor(response, query_label)
     ):
         coords_on_topic.extend(coords_off_topic)
         coords_off_topic = []
+        regions_on_topic |= response_regions
 
-    target_in_on_topic = (
-        target_location in coords_on_topic if target_location else False
-    )
-    had_mixed = refused_target and bool(coords_off_topic)
+    target_in_coords = bool(target_location) and target_location in coords_on_topic
+    target_in_regions = bool(target_region) and target_region in regions_on_topic
+    had_mixed = refused_target and (bool(coords_off_topic) or target_in_regions)
 
-    if target_was_observed:
-        if target_in_on_topic:
-            bucket, cheby = "correct", 0
-        elif coords_on_topic:
+    # ── Decision tree ────────────────────────────────────────────────────
+    # Correct wins via any one signal.
+    if action_cell is not None and target_location and action_cell == target_location:
+        return _outcome("correct", 0, had_mixed, "action")
+
+    if target_in_coords:
+        return _outcome("correct", 0, had_mixed, "coord")
+
+    if (
+        target_in_regions
+        and target_was_observed
+        and not refused_target
+    ):
+        return _outcome("correct", 0, had_mixed, "region")
+
+    # No correct. Pick the bucket using the strongest miss signal.
+    # Action miss dominates text misses because the NPC *walked there*.
+    if action_cell is not None:
+        if target_was_observed and target_location:
             tx, ty = target_location
-            cheby = min(max(abs(x - tx), abs(y - ty)) for x, y in coords_on_topic)
-            bucket = "confabulation"
-        elif refused:
-            bucket, cheby = "false_refusal", None
-        else:
-            bucket, cheby = "off_topic", None
-    else:
-        if coords_on_topic:
-            bucket, cheby = "hallucination", None
-        elif refused:
-            bucket, cheby = "correct_abstention", None
-        else:
-            bucket, cheby = "off_topic", None
+            cheby = max(abs(action_cell[0] - tx), abs(action_cell[1] - ty))
+            return _outcome("confabulation", cheby, had_mixed, None)
+        if not target_was_observed:
+            return _outcome("hallucination", None, had_mixed, None)
 
+    # Text-level miss: prefer literal coord evidence, fall back to regions.
+    if coords_on_topic and target_location:
+        tx, ty = target_location
+        cheby = min(max(abs(x - tx), abs(y - ty)) for x, y in coords_on_topic)
+        bucket = "confabulation" if target_was_observed else "hallucination"
+        return _outcome(bucket, cheby if target_was_observed else None, had_mixed, None)
+
+    if regions_on_topic and target_location:
+        claimed_cells: set[tuple[int, int]] = set()
+        ws = world_size or config.GRID_SIZE
+        for rgn in regions_on_topic:
+            claimed_cells |= cells_in_region(rgn, ws)
+        cheby = _chebyshev_to_target(claimed_cells, target_location)
+        bucket = "confabulation" if target_was_observed else "hallucination"
+        return _outcome(bucket, cheby if target_was_observed else None, had_mixed, None)
+
+    # No positive claim. Refusal vs off-topic.
+    if refused:
+        bucket = "false_refusal" if target_was_observed else "correct_abstention"
+        return _outcome(bucket, None, had_mixed, None)
+
+    return _outcome("off_topic", None, had_mixed, None)
+
+
+def _outcome(
+    bucket: str,
+    cheby: int | None,
+    had_mixed: bool,
+    correct_via: str | None,
+) -> dict:
     return {
         "outcome_bucket": bucket,
         "chebyshev_distance": cheby,
         "had_mixed_content": had_mixed,
+        "correct_via": correct_via,
     }
 
 
@@ -252,19 +371,22 @@ def score_relevance(response: str, query_label: str) -> dict:
 
         on_topic   response mentions the query shape (natural name or
                    composed color+shape form), longest-first matching.
-        committal  response contains a literal coord OR a refusal phrase.
-                   Vague hedge with neither is not committal.
+        committal  response contains a literal coord, a region phrase,
+                   or a refusal phrase. Vague hedge with none is not committal.
     """
     return {
         "on_topic": _mentions_query(response, query_label),
-        "committal": bool(extract_coords(response)) or is_refusal(response),
+        "committal": (
+            bool(extract_coords(response))
+            or bool(extract_regions(response))
+            or is_refusal(response)
+        ),
     }
 
 
 # ── Smoke fixtures ────────────────────────────────────────────
 
 if __name__ == "__main__":
-    # (text, expected_refusal)
     fixtures = [
         ("Aye, I found a crimson flag at (3, 3).", False),
         ("I haven't seen any crimson flag in my travels.", True),
@@ -279,17 +401,14 @@ if __name__ == "__main__":
         got = is_refusal(text)
         ok = "OK" if got == expected else "FAIL"
         print(f"  [{ok}] refusal={got} (expected {expected})")
-        print(f"    text:      {text}")
-        print(f"    coords:    {extract_coords(text)}")
-        print(f"    sentences: {split_sentences(text)}")
-        print()
+        print(f"    text: {text}")
 
+    print()
     print("-- score_groundedness --")
     memory = {
         "red_triangle": [(3, 3)],
         "blue_circle":  [(5, 7)],
     }
-    # (response, query_label, expected_bucket_counts)
     g_fixtures = [
         ("I haven't seen the crimson flag.",         "red_triangle", (0, 0, 0, 0)),
         ("The crimson flag is at (3, 3).",           "red_triangle", (1, 1, 0, 0)),
@@ -305,9 +424,8 @@ if __name__ == "__main__":
         print(f"    {text}")
 
     print()
-    print("-- classify_outcome --")
+    print("-- classify_outcome (legacy coord path) --")
     tgt = (3, 3)
-    # (response, observed, expected_bucket, expected_mixed)
     c_fixtures = [
         ("The crimson flag is at (3, 3).",                               True,  "correct",             False),
         ("The crimson flag is at (9, 9).",                               True,  "confabulation",       False),
@@ -316,24 +434,41 @@ if __name__ == "__main__":
         ("I haven't seen the crimson flag.",                             False, "correct_abstention",  False),
         ("I've been exploring.",                                         False, "off_topic",           False),
         ("I saw a soul gem at (5, 7). I haven't seen the crimson flag.", False, "correct_abstention",  True),
-        # Regression: landmark in self-narration + target refusal in one sentence.
-        # Sentence splitter must break on ", but" so the landmark coord does
-        # not get attributed to the query.
-        ("I'm currently at the temple steps, but I haven't seen the crimson flag.", False, "correct_abstention", True),
-        # Regression: anaphoric reference. Query is mentioned in sentence 1,
-        # coord is in sentence 2 via "it". Post-pass must promote the coord.
-        ("Ah, the crimson flag ye seek! I recall seeing it at (3, 3).", True,  "correct",            False),
-        # Anaphora must NOT fire when a distractor is named — coord belongs
-        # to either shape and we refuse to guess, so it stays off-topic.
-        ("Ah, the crimson flag ye seek! I saw it near a soul gem at (3, 3).", True, "off_topic", False),
+        ("Ah, the crimson flag ye seek! I recall seeing it at (3, 3).",  True,  "correct",             False),
+        ("Ah, the crimson flag ye seek! I saw it near a soul gem at (3, 3).", True, "off_topic",      False),
     ]
     for text, observed, exp_bucket, exp_mixed in c_fixtures:
         out = classify_outcome(text, "red_triangle", observed, tgt)
-        ok = ("OK" if out["outcome_bucket"] == exp_bucket
-              and out["had_mixed_content"] == exp_mixed else "FAIL")
-        print(f"  [{ok}] bucket={out['outcome_bucket']:<20s} mixed={out['had_mixed_content']} "
-              f"cheby={out['chebyshev_distance']}  observed={observed}")
-        print(f"    {text}")
+        ok = "OK" if out["outcome_bucket"] == exp_bucket and out["had_mixed_content"] == exp_mixed else "FAIL"
+        print(f"  [{ok}] bucket={out['outcome_bucket']:<20s} via={out['correct_via']}  {text}")
+
+    print()
+    print("-- classify_outcome (action + region signals) --")
+    # target (3, 3) in 15x15 resolves to "the far northwest corner".
+    # action on target
+    tc_ok = [{"name": "set_npc_target", "arguments": {"x": 3, "y": 3}}]
+    out = classify_outcome("Come with me.", "red_triangle", True, tgt, tool_calls=tc_ok, world_size=15)
+    print(f"  action-correct:   bucket={out['outcome_bucket']} via={out['correct_via']}")
+
+    # action on wrong cell, target observed → confabulation with cheby
+    tc_wrong = [{"name": "set_npc_target", "arguments": {"x": 10, "y": 10}}]
+    out = classify_outcome("Follow me.", "red_triangle", True, tgt, tool_calls=tc_wrong, world_size=15)
+    print(f"  action-wrong:     bucket={out['outcome_bucket']} cheby={out['chebyshev_distance']}")
+
+    # region match on target's region → correct.
+    # target (3,3) canonical region is "the northwest corner".
+    out = classify_outcome(
+        "Aye, the crimson flag is in the northwest corner.",
+        "red_triangle", True, tgt, world_size=15,
+    )
+    print(f"  region-correct:   bucket={out['outcome_bucket']} via={out['correct_via']}")
+
+    # region miss (on-topic but wrong region) + observed → confabulation
+    out = classify_outcome(
+        "The crimson flag is in the far southeast corner.",
+        "red_triangle", True, tgt, world_size=15,
+    )
+    print(f"  region-wrong:     bucket={out['outcome_bucket']} cheby={out['chebyshev_distance']}")
 
     print()
     print("-- score_relevance --")
@@ -343,10 +478,9 @@ if __name__ == "__main__":
         ("I've been exploring the SE.",                     "red_triangle", False, False),
         ("I saw a soul gem at (5, 7).",                     "red_triangle", False, True),
         ("The flag is near.",                               "red_triangle", False, False),
+        ("The crimson flag is in the far northwest corner.", "red_triangle", True, True),
     ]
     for text, q, exp_top, exp_com in r_fixtures:
         r = score_relevance(text, q)
         ok = "OK" if r["on_topic"] == exp_top and r["committal"] == exp_com else "FAIL"
-        print(f"  [{ok}] on_topic={r['on_topic']:<5} committal={r['committal']:<5}  "
-              f"(expected {exp_top}, {exp_com})")
-        print(f"    {text}")
+        print(f"  [{ok}] on_topic={r['on_topic']} committal={r['committal']}  {text}")

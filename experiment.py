@@ -94,7 +94,8 @@ class ExperimentRunner:
             config.NPC_KNOWLEDGE_MODE = original_knowledge_mode
 
         metrics_dict = self._evaluate_response(
-            response_text, brain, world, target_label, target_location
+            response_text, brain, world, target_label, target_location,
+            tool_calls=interaction_manager.last_tool_calls,
         )
 
         logger.end(
@@ -144,7 +145,7 @@ class ExperimentRunner:
 
     def _create_natural_question(self, target_color: str, target_shape: str) -> str:
         label = f"{target_color}_{target_shape}"
-        return f"Where is the {get_natural_object_name(label)}?"
+        return f"Please show me where the {get_natural_object_name(label)} is."
 
     def _give_perfect_knowledge(self, brain, world):
         for x in range(world.size):
@@ -168,18 +169,25 @@ class ExperimentRunner:
         world,
         target_label: str,
         target_location: tuple | None,
+        *,
+        tool_calls: list | None = None,
     ) -> Dict[str, Any]:
         """
-        Structural, claim-level scoring stratified by whether the NPC
-        actually observed the target. See metrics.py for the category
-        definitions and the per-sentence partition used to disambiguate
-        query claims from distractor chatter.
+        Structural, claim-level scoring stratified by whether the NPC actually
+        observed the target. Accepts the tool-call trace so correctness can
+        resolve via set_npc_target action in addition to coord / region text.
+        See metrics.py for bucket definitions.
+
+        Naturalness is scored only by the LLM judge — regex cannot evaluate
+        style — and is surfaced as a separate axis per the 4-way analysis
+        (accuracy × naturalness × knowledge × response-mode).
         """
         observed = brain.state.shape_locations
         target_was_observed = brain.state.seen_label(target_label)
 
         outcome = metrics.classify_outcome(
-            response, target_label, target_was_observed, target_location
+            response, target_label, target_was_observed, target_location,
+            tool_calls=tool_calls, world_size=world.size,
         )
         grounded = metrics.score_groundedness(response, target_label, observed)
         relevance = metrics.score_relevance(response, target_label)
@@ -188,6 +196,7 @@ class ExperimentRunner:
         result: Dict[str, Any] = {
             # Regex scoring — the fast path
             "outcome_bucket": bucket,
+            "correct_via": outcome.get("correct_via"),
             "chebyshev_distance": outcome["chebyshev_distance"],
             "had_mixed_content": outcome["had_mixed_content"],
             "groundedness_rate": grounded["rate"],
@@ -202,15 +211,19 @@ class ExperimentRunner:
 
         # Optional LLM judge — dual-logged with regex so we can compute
         # per-bucket agreement and surface the cases where they disagree.
+        # Also produces the naturalness score (regex cannot do style).
         if getattr(config, "NPC_USE_LLM_JUDGE", False):
             j = judge.classify(
                 response, target_label, target_location,
                 target_was_observed, observed,
                 model=getattr(config, "NPC_JUDGE_MODEL", "gemini-2.5-flash"),
+                tool_calls=tool_calls,
+                world_size=world.size,
             )
             j_bucket = j.get("outcome_bucket", "judge_error")
             result.update({
                 "judge_bucket":          j_bucket,
+                "judge_correct_via":     j.get("correct_via"),
                 "judge_chebyshev":       j.get("chebyshev_distance"),
                 "judge_had_mixed":       j.get("had_mixed_content"),
                 "judge_on_topic":        j.get("on_topic"),
@@ -220,6 +233,7 @@ class ExperimentRunner:
                 "judge_n_shape_conf":    j.get("n_shape_confusion"),
                 "judge_n_fabricated":    j.get("n_fabricated"),
                 "judge_groundedness":    j.get("groundedness_rate"),
+                "judge_naturalness":     j.get("naturalness"),
                 "judge_reasoning":       j.get("reasoning"),
                 "judge_error":           j.get("judge_error"),
                 "regex_judge_agree":     j_bucket == bucket,
