@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import os
+import random
+import re
+import time
 from typing import Any
 
 from dotenv import load_dotenv
@@ -10,6 +13,17 @@ from google.genai import types
 import config
 
 load_dotenv()
+
+
+# Free-tier Gemini returns 429 RESOURCE_EXHAUSTED when RPM or daily quota is
+# hit. 429s during a short burst are almost always the per-minute limit, so
+# a few retries with backoff usually clears them without human intervention.
+# Daily-quota 429s still bubble up after the retry budget, preserving the
+# fail-loud behaviour experiments need.
+_MAX_RETRIES = 5
+_RETRY_BASE_S = 4.0
+
+_RETRYABLE_STATUS_RE = re.compile(r"\b(429|500|503)\b")
 
 
 class LLMClientError(RuntimeError):
@@ -103,15 +117,27 @@ class LLMClient:
         model: str | None = None,
         **kwargs: Any,
     ) -> Any:
-        """Return the provider response without post-processing."""
-        try:
-            return self.client.models.generate_content(
-                model=model or self.model,
-                contents=contents,
-                **kwargs,
-            )
-        except Exception as exc:
-            raise LLMClientError(f"Gemini generate_content failed: {exc}") from exc
+        """Return the provider response without post-processing.
+
+        Retries transient errors (429/500/503) with exponential backoff plus
+        jitter — the common failure mode in experiments is bursting past the
+        free-tier RPM limit, which clears on its own within a minute.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(_MAX_RETRIES):
+            try:
+                return self.client.models.generate_content(
+                    model=model or self.model,
+                    contents=contents,
+                    **kwargs,
+                )
+            except Exception as exc:
+                if not _RETRYABLE_STATUS_RE.search(str(exc)) or attempt == _MAX_RETRIES - 1:
+                    raise LLMClientError(f"Gemini generate_content failed: {exc}") from exc
+                delay = _RETRY_BASE_S * (2 ** attempt) + random.uniform(0, 1)
+                time.sleep(delay)
+                last_exc = exc
+        raise LLMClientError(f"Gemini generate_content failed: {last_exc}")
 
     def _build_config(
         self,
