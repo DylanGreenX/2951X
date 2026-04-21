@@ -55,7 +55,7 @@ NPC_START = (1, 1)
 NPC_TICK_INTERVAL = 600      # ms between NPC steps
 NPC_OBSERVED_CELLS_VISIBLE = False # when False, NPC sight range and observed cells are not visible to player
 # "deterministic" | "llm" | "slm"
-NPC_RESPONSE_MODE = "llm"
+NPC_RESPONSE_MODE = "slm"
 NPC_LLM_MAX_TOOL_TURNS = 4
 NPC_LLM_MAX_OUTPUT_TOKENS = 128
 NPC_LLM_TEMPERATURE = 0.4
