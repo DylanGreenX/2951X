@@ -17,29 +17,37 @@ class GameWorld:
         self._generate(target_color, target_shape)
 
     def _generate(self, target_color: str, target_shape: str):
-        """Place shapes randomly on the grid, avoiding collisions."""
+        """Place shapes on the grid, avoiding collisions.
+
+        When ``config.RANDOM_SPAWN`` is False, honour
+        ``config.FIXED_SHAPE_POSITIONS`` for any label with a fixed cell (used
+        to line shapes up with the painted map for demos). Anything without a
+        fixed cell — or any fixed cell already claimed — falls back to random
+        free placement. The experiment pipeline keeps RANDOM_SPAWN=True so
+        per-seed variation is preserved.
+        """
         occupied = set()
 
         # Reserve NPC and player starts
         occupied.add(config.NPC_START)
         occupied.add(config.PLAYER_START)
 
-        # Add 1 target color, shape pair
-        pos = self._random_free_pos(occupied)
-        occupied.add(pos)
-        self.shapes.append(Shape(target_color, target_shape, pos[0], pos[1]))
+        use_fixed = not getattr(config, "RANDOM_SPAWN", True)
+        fixed = getattr(config, "FIXED_SHAPE_POSITIONS", {}) if use_fixed else {}
 
-        shape_specs = (
-            [
-                (color, shape)
-                for color in config.COLORS
-                for shape in config.SHAPES
-                if not (color == target_color and shape == target_shape)
-            ]
-        )
+        shape_specs = [(target_color, target_shape)]
+        shape_specs += [
+            (color, shape)
+            for color in config.COLORS
+            for shape in config.SHAPES
+            if not (color == target_color and shape == target_shape)
+        ]
 
         for color, shape_type in shape_specs:
-            pos = self._random_free_pos(occupied)
+            label = f"{color}_{shape_type}"
+            pos = fixed.get(label)
+            if pos is None or pos in occupied:
+                pos = self._random_free_pos(occupied)
             occupied.add(pos)
             self.shapes.append(Shape(color, shape_type, pos[0], pos[1]))
 

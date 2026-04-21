@@ -36,6 +36,52 @@ NATURAL_OBJECTS = {
 # ("the tavern", "the blacksmith") carried no geographic meaning and forced the
 # LLM to reconcile three representations (cell coord, shape label, landmark).
 
+# Sprite assets overlaid on the painted map. Missing files fall back to the
+# colored-polygon draw path in main._draw_grid.
+BG_IMAGE_PATH = "images/bg.png"
+SHAPE_ASSETS = {
+    "blue_circle":   "images/soul_gem.png",
+    "red_circle":    "images/gem_crimson.png",
+    "green_circle":  "images/gem_emerald.png",
+    "purple_circle": "images/gem_amethyst.png",
+    "yellow_circle": "images/gem_golden.png",
+
+    "red_triangle":    "images/flag_crimson.png",
+    "blue_triangle":   "images/flag_sapphire.png",
+    "green_triangle":  "images/flag_emerald.png",
+    "purple_triangle": "images/flag_amethyst.png",
+    "yellow_triangle": "images/flag_golden.png",
+
+    "green_square":  "images/alchemy_ingredient.png",
+    "red_square":    "images/rune_crimson.png",
+    "blue_square":   "images/rune_sapphire.png",
+    "purple_square": "images/rune_amethyst.png",
+    "yellow_square": "images/rune_golden.png",
+}
+
+# Fixed shape placements lined up with painted regions. Used only when
+# RANDOM_SPAWN is False; otherwise world.py falls back to random placement.
+# Coverage need not be complete — any shape without a fixed position gets a
+# random free cell.
+RANDOM_SPAWN = True
+FIXED_SHAPE_POSITIONS = {
+    "red_triangle":    (5, 5),
+    "blue_circle":     (2, 8),
+    "green_square":    (12, 3),
+    "yellow_circle":   (7, 12),
+    "purple_triangle": (10, 10),
+    "blue_square":     (1, 14),
+    "red_circle":      (14, 1),
+    "green_circle":    (4, 2),
+    "purple_circle":   (8, 4),
+    "yellow_square":   (3, 11),
+    "blue_triangle":   (11, 6),
+    "green_triangle":  (6, 9),
+    "purple_square":   (9, 2),
+    "yellow_triangle": (2, 2),
+    "red_square":      (13, 12),
+}
+
 # NPC
 NPC_SIGHT_RANGE = 1          # observes (2*r+1)x(2*r+1) = 3x3 window
 NPC_START = (1, 1)
@@ -112,8 +158,10 @@ FPS = 30
 # Colors
 BG_COLOR = (30, 30, 35)
 GRID_LINE_COLOR = (50, 50, 55)
-FOG_COLOR = (20, 20, 25, 180)
-SEEN_TINT = (255, 255, 255, 18)
+# Fog is near-opaque over the painted map so unexplored regions stay hidden;
+# seen tint is a subtle dim so previously-observed cells read as "memory".
+FOG_COLOR = (10, 10, 15, 235)
+SEEN_TINT = (10, 10, 15, 110)
 NPC_COLOR = (255, 200, 50)
 PLAYER_COLOR = (255, 255, 255)
 TEXT_COLOR = (200, 200, 200)

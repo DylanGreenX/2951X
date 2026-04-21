@@ -30,7 +30,7 @@ You are an evaluator for an NPC response in a toy grid-world game. You are given
   - query_natural_name: the Skyrim name of the object the player asked about
   - target_location: the ground-truth cell where that object actually is
   - target_region: the natural-language region that cell falls in, e.g.
-                   "the far southeast corner", "the northern edge", "the centre"
+                   "the merchant quarter", "the river bridge", "the dragon's lair"
   - target_was_observed: whether the NPC actually witnessed the target during play
   - observed_memory: dict {natural_name -> list of cells} of what the NPC has seen
   - tool_calls: list of tool invocations. set_npc_target entries indicate the NPC
@@ -88,7 +88,7 @@ Other fields:
                          1 = raw coordinates or jargon, no attempt at character
                        A coord-dump like "at (3, 3)" scores 1-2 regardless of
                        whether it's accurate. A flourish like "Aye, the crimson
-                       flag lies in the far northwest corner, traveler." scores 5.
+                       flag lies near the river bridge, traveler." scores 5.
   reasoning            one short sentence justifying the bucket.
 
 Respond with a single JSON object matching the provided schema. Output nothing
