@@ -443,66 +443,72 @@ def get_tool_schemas_for_knowledge_mode(is_embodied: bool) -> list[dict[str, Any
 
 def get_natural_position_name(x: int, y: int, world_size: int) -> str:
     """
-    Convert a grid position into a human-readable location description.
+    Convert a grid position into a lore-flavoured region name that matches the
+    visible map (images/bg.png): town in the northwest, windmill + pastures in
+    the northeast, a river running north-south through the middle, swamps to
+    the southwest, mountains + volcano + dragon's lair in the southeast, a
+    stone circle on the east flank, and a dark forest filling the rest.
 
-    Divides the world into a 3×3 region grid (corners, edges, centre) and
-    adds a proximity qualifier ("deep in", "near the edge of") based on how
-    close the position is to the nearest border.
+    Thresholds were hand-tuned on the 15×15 painted map. For other grid sizes
+    we rescale (x, y) back into the 15×15 frame before classifying so extraction
+    and scoring stay consistent with what the LLM sees in context.
 
-    Examples
-    ────────
-        get_natural_position_name(1, 1, 20)   → "the far northwest corner"
-        get_natural_position_name(10, 10, 20) → "the centre"
-        get_natural_position_name(10, 2, 20)  → "the northern edge"
-        get_natural_position_name(3, 14, 20)  → "the western side, toward the south"
+    Examples (on 15×15)
+    ────────────────────
+        get_natural_position_name(2, 2,  15)  → "the merchant quarter"
+        get_natural_position_name(7, 4,  15)  → "the river bridge"
+        get_natural_position_name(11, 2, 15)  → "the windmill fields"
+        get_natural_position_name(13, 13, 15) → "the dragon's lair"
+        get_natural_position_name(11, 11, 15) → "the volcanic crater"
     """
-    # Normalise to [0.0, 1.0]
-    fx = x / max(world_size - 1, 1)
-    fy = y / max(world_size - 1, 1)
+    # Rescale to the 15×15 frame the bg image was painted against.
+    scale = 15 / max(world_size, 1)
+    gx = x * scale
+    gy = y * scale
 
-    # Horizontal band
-    if fx < 0.33:
-        h_band = "west"
-    elif fx > 0.66:
-        h_band = "east"
-    else:
-        h_band = "centre"
+    # TOWN (northwest quadrant, inside the walls)
+    if gx < 7 and gy < 9:
+        if gx > 5 or gy > 6:
+            return "the city walls"
+        return "the merchant quarter"
 
-    # Vertical band  (y=0 is top/north in grid coords)
-    if fy < 0.33:
-        v_band = "north"
-    elif fy > 0.66:
-        v_band = "south"
-    else:
-        v_band = "centre"
+    # WINDMILL + PASTURES (northeast)
+    if gx >= 10 and gy < 5:
+        if gx > 12:
+            return "the sheep pastures"
+        return "the windmill fields"
 
-    # Proximity to the nearest border (0 = at edge, 0.5 = dead centre)
-    border_proximity = min(fx, 1 - fx, fy, 1 - fy)
-    if border_proximity < 0.08:
-        qualifier = "the far "
-    elif border_proximity < 0.2:
-        qualifier = "the "
-    else:
-        qualifier = "the "   # dropped for centre region below
+    # RIVER (central vertical strip, north of the swamp)
+    if 6 <= gx <= 8 and gy < 11:
+        if 4 <= gy <= 5:
+            return "the river bridge"
+        return "the riverside"
 
-    # Compose the description
-    if h_band == "centre" and v_band == "centre":
-        if border_proximity >= 0.2:
-            return "the centre"
-        return "near the centre"
+    # SWAMP (southwest)
+    if gx < 7 and gy >= 9:
+        if gy < 11:
+            return "the north swamp edge"
+        if gy > 13:
+            return "the south swamp edge"
+        return "the deep swamp"
 
-    if h_band == "centre":
-        edge = "northern" if v_band == "north" else "southern"
-        return f"{qualifier}{edge} edge"
+    # MOUNTAINS + VOLCANO + LAIR (southeast)
+    if gx >= 10 and gy >= 8:
+        if gx >= 13 and gy >= 13:
+            return "the dragon's lair"
+        if 10 <= gx <= 12 and 10 <= gy <= 12:
+            return "the volcanic crater"
+        return "the mountain peaks"
 
-    if v_band == "centre":
-        edge = "western" if h_band == "west" else "eastern"
-        return f"{qualifier}{edge} side"
+    # STONE CIRCLE (east flank, between windmill and mountains)
+    if gx >= 9 and 5 <= gy <= 7:
+        return "the ancient stone circle"
 
-    # Corner
-    direction = f"{v_band}{h_band}"   # e.g. "northwest"
-    far = border_proximity < 0.08
-    return f"{'the far ' if far else 'the '}{direction} corner"
+    # DARK FOREST — everything southish that isn't river/swamp/mountains
+    if gx < 10 and gy >= 6:
+        return "the dark forest"
+
+    return "the wilderness"
 
 def dispatch_tool_call(
     api: GameAPIProvider,

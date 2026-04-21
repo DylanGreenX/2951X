@@ -17,20 +17,21 @@ from game_api_interface import get_natural_position_name
 import config
 
 
-# All region phrases get_natural_position_name can produce. Used by
-# extract_regions_from_text so metrics can score region-level answers
-# without re-implementing the naming logic.
-_REGION_PHRASES: tuple[str, ...] = (
-    "the far northwest corner", "the northwest corner",
-    "the far northeast corner", "the northeast corner",
-    "the far southwest corner", "the southwest corner",
-    "the far southeast corner", "the southeast corner",
-    "the far northern edge", "the northern edge",
-    "the far southern edge", "the southern edge",
-    "the far western side", "the western side",
-    "the far eastern side", "the eastern side",
-    "near the centre", "the centre",
-)
+# Region phrases get_natural_position_name can produce. Derived from the
+# function's codomain so swapping the region naming (e.g. to match a new
+# painted map) propagates to extract_regions_from_text + metrics without
+# hand-editing this tuple.
+def _collect_region_phrases(world_size: int) -> tuple[str, ...]:
+    seen: set[str] = set()
+    for gx in range(world_size):
+        for gy in range(world_size):
+            seen.add(get_natural_position_name(gx, gy, world_size))
+    # Longest-first so extract_regions_from_text prefers the most specific
+    # phrase on any substring overlap.
+    return tuple(sorted(seen, key=len, reverse=True))
+
+
+_REGION_PHRASES: tuple[str, ...] = _collect_region_phrases(config.GRID_SIZE)
 
 
 def get_natural_object_name(label: str) -> str:
@@ -50,12 +51,13 @@ def extract_coordinates_from_text(text: str) -> list:
 def extract_regions_from_text(text: str) -> set[str]:
     """
     Return the set of region phrases present in text. Longest-first matching so
-    'the far northwest corner' wins over 'the northwest corner'.
+    the most specific region wins when phrases overlap (e.g. "the deep swamp"
+    over "the swamp").
     """
     lower = text.lower()
     found: set[str] = set()
     consumed: list[tuple[int, int]] = []
-    for phrase in sorted(_REGION_PHRASES, key=len, reverse=True):
+    for phrase in _REGION_PHRASES:
         idx = 0
         while (idx := lower.find(phrase, idx)) != -1:
             span = (idx, idx + len(phrase))
