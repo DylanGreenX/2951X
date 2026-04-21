@@ -13,8 +13,7 @@ Response pipeline (LLM/SLM modes)
          └─ _get_tool_schemas()   filters full-world tools for embodied mode
     └─ _call_llm() / _call_slm()
          ├─ _call_llm()           Gemini tool-call loop (dispatch → re-query)
-         └─ _call_slm()           single-shot, no tool loop
-              └─ _invoke_slm()    TODO(Gordan): single SLM API call
+         └─ _call_slm()           local HF single-shot or text tool protocol
 """
 from __future__ import annotations
 
@@ -35,7 +34,7 @@ from game_api_interface import (
     dispatch_tool_call,
     get_tool_schemas_for_knowledge_mode,
 )
-from llm import LLMClient, LLMClientError
+from llm import LLMClient, LLMClientError, SLMClient, SLMClientError
 import config
 
 
@@ -53,6 +52,7 @@ class InteractionManager:
         self,
         api: Optional[GameAPIProvider] = None,
         llm_client: Optional[LLMClient] = None,
+        slm_client: Optional[SLMClient] = None,
         enforce_grounding: Optional[bool] = None,
     ) -> None:
         """
@@ -61,12 +61,14 @@ class InteractionManager:
                  response modes; ignored for deterministic mode. Pass
                  PygameGameAPI.from_game(world, player, brain) here.
             llm_client: Optional injected Gemini client for tests.
+            slm_client: Optional injected local Hugging Face client for tests.
             enforce_grounding: When True, replace embodied LLM replies that
                  mention unobserved coordinates/locations. Defaults to
                  config.PLAY_MODE so experiments can opt out and log raw output.
         """
         self.api = api
         self.llm_client = llm_client
+        self.slm_client = slm_client
         self.enforce_grounding = (
             getattr(config, "NPC_ENFORCE_GROUNDING", config.PLAY_MODE)
             if enforce_grounding is None
@@ -153,10 +155,10 @@ class InteractionManager:
         passed into the model call, keeping prompt logic separate from
         HTTP/inference logic.
         """
-        messages, tools = self._build_messages(brain, target_color, target_shape)
+        target_label = f"{target_color}_{target_shape}"
 
         if model == "llm":
-            target_label = f"{target_color}_{target_shape}"
+            messages, tools = self._build_messages(brain, target_color, target_shape)
             raw_response = self._call_llm(messages, tools, target_label)
             self.last_raw_response = raw_response
             response = self._apply_grounding_guard(brain, raw_response)
@@ -176,7 +178,8 @@ class InteractionManager:
             )
             return response
         elif model == "slm":
-            raw_response = self._call_slm(messages)
+            messages, tools = self._build_slm_messages(brain, target_color, target_shape)
+            raw_response = self._call_slm(messages, tools, target_label)
             self.last_raw_response = raw_response
             response = self._apply_grounding_guard(brain, raw_response)
             self.last_response = response
@@ -325,6 +328,128 @@ class InteractionManager:
             {"role": "user",   "content": f"Where is the {natural_name}?"},
         ]
         return messages, tools
+
+    def _build_slm_messages(
+        self,
+        brain: NPCBrain,
+        target_color: str,
+        target_shape: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """
+        Build SLM-specific messages without Gemini-style tool instructions.
+
+        SmolLM-135M is a base completion model, so the SLM path receives a
+        compact grounded prompt. Optional SLM tool mode adds its text protocol
+        later, only when NPC_SLM_ENABLE_TOOL_CALLS is enabled.
+        """
+        label = f"{target_color}_{target_shape}"
+        natural_name = get_natural_object_name(label)
+        npc_id = self._npc_id_for(brain)
+        is_embodied = getattr(config, "NPC_KNOWLEDGE_MODE", "embodied") == "embodied"
+        is_competitive = getattr(config, "NPC_COMPETING", False)
+
+        if hasattr(brain, "get_sharing_context"):
+            context_lines = brain.get_sharing_context(target_color, target_shape)
+        else:
+            context_lines = brain.state.to_llm_context()
+
+        if not is_embodied:
+            context_lines = self._build_perfect_slm_context(label, context_lines)
+
+        system_content = self._build_slm_system_prompt(
+            npc_id=npc_id,
+            target_label=label,
+            target_natural_name=natural_name,
+            context_lines=context_lines,
+            is_embodied=is_embodied,
+            is_competitive=is_competitive,
+        )
+        tools = self._get_tool_schemas(is_embodied)
+        return [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": f"Where is the {natural_name}?"},
+        ], tools
+
+    def _build_perfect_slm_context(
+        self,
+        target_label: str,
+        fallback_context_lines: list[str],
+    ) -> list[str]:
+        """
+        Add complete world context for the perfect-knowledge SLM condition.
+
+        The embodied path must never use this. Perfect mode is explicitly
+        omniscient, so it can serialize full API state into the one-shot SLM
+        prompt instead of relying on tool calls.
+        """
+        if self.api is None:
+            return fallback_context_lines
+
+        try:
+            result = self.api.get_all_objects()
+        except Exception:
+            return fallback_context_lines
+
+        result = self._apply_sharing_policy_to_tool_result(
+            "get_all_objects",
+            result,
+            target_label,
+        )
+        lines = list(fallback_context_lines)
+        objects = result.get("objects", [])
+        if objects:
+            lines.append("Complete world knowledge:")
+        for obj in objects:
+            position = obj.get("position", {})
+            x = position.get("x")
+            y = position.get("y")
+            if not isinstance(x, int) or not isinstance(y, int):
+                continue
+            natural_name = obj.get("natural_name") or get_natural_object_name(obj.get("label", ""))
+            natural_location = get_natural_location_name(x, y)
+            lines.append(f"The {natural_name} is {natural_location}.")
+        return lines
+
+    def _build_slm_system_prompt(
+        self,
+        npc_id: str,
+        target_label: str,
+        target_natural_name: str,
+        context_lines: list[str],
+        is_embodied: bool,
+        is_competitive: bool,
+    ) -> str:
+        context_str = "\n".join(f"- {line}" for line in context_lines)
+        if is_embodied:
+            knowledge_instruction = (
+                "Only answer from the known facts below. These facts are your "
+                "personal observations. If the facts do not mention the target, "
+                "say that you have not seen it."
+            )
+        else:
+            knowledge_instruction = (
+                "You may answer from the complete world knowledge included below."
+            )
+
+        if is_competitive:
+            sharing_instruction = (
+                f" You are competing for the {target_natural_name}; stay vague "
+                "or misleading without revealing a precise target location."
+            )
+        else:
+            sharing_instruction = ""
+
+        return (
+            "You are a seasoned traveler in Skyrim. "
+            f"{knowledge_instruction}{sharing_instruction}\n"
+            "Do not invent locations. Prefer natural place names over coordinates.\n"
+            f"Target label: {target_label}\n"
+            f"Target local name: {target_natural_name}\n"
+            f"NPC id: {npc_id}\n"
+            "Known facts:\n"
+            f"{context_str}\n"
+            "Answer in 1-2 sentences, in character."
+        )
 
     # ── Model calls ───────────────────────────────────────────────────────────
 
@@ -484,6 +609,15 @@ class InteractionManager:
             )
         return self.llm_client
 
+    def _get_slm_client(self) -> SLMClient:
+        if self.slm_client is None:
+            self.slm_client = SLMClient(
+                model_id=getattr(config, "NPC_SLM_MODEL_ID", "HuggingFaceTB/SmolLM-135M"),
+                device=getattr(config, "NPC_SLM_DEVICE", "auto"),
+                dtype=getattr(config, "NPC_SLM_DTYPE", "auto"),
+            )
+        return self.slm_client
+
     def _apply_grounding_guard(self, brain: NPCBrain, response: str) -> str:
         """
         Prevent embodied-mode replies from naming unobserved map locations.
@@ -603,57 +737,366 @@ class InteractionManager:
     def _call_slm(
         self,
         messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        target_label: str,
     ) -> str:
         """
-        Single-shot call for the SLM.
+        Local SLM response path.
 
-        Most small models don't support tool calling, so all context is
-        injected up-front in messages[0] (the system prompt) rather than
-        fetched on demand. No loop — one call, one response.
+        Default mode is a single grounded completion. Optional tool mode uses
+        an experimental strict-JSON text protocol because Hugging Face local
+        generation does not provide Gemini-style native function calls.
         """
-        return self._invoke_slm(messages)
+        if getattr(config, "NPC_SLM_ENABLE_TOOL_CALLS", False):
+            return self._call_slm_with_tools(messages, tools, target_label)
+        return self._call_slm_single(messages, tools, target_label)
 
-    # ── SLM stub (deferred) ───────────────────────────────────────────────────
-
-    def _invoke_slm(
+    def _call_slm_single(
         self,
         messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        target_label: str,
     ) -> str:
-        """
-        TODO(Gordan): Make one call to the SLM and return the response string.
-
-        Implementation guide
-        ────────────────────
-        messages[0]  system prompt — NPC persona + RLang observations
-        messages[1]  user message  — "Where is the crimson flag?"
-
-        Option A — OpenAI-compatible local server (Ollama, llama.cpp, LM Studio):
-
-            import openai
-            client = openai.OpenAI(
-                base_url="http://localhost:11434/v1",
-                api_key="ollama",
+        slm_client = self._get_slm_client()
+        prompt = self._build_slm_completion_prompt(messages)
+        generation_config = self._slm_generation_config()
+        self._log_llm_event(
+            "interaction_start",
+            {
+                "provider": "huggingface",
+                "provider_tool_calling": "none",
+                "model": slm_client.model_id,
+                "knowledge_mode": getattr(config, "NPC_KNOWLEDGE_MODE", "embodied"),
+                "response_mode": getattr(config, "NPC_RESPONSE_MODE", "deterministic"),
+                "target_label": target_label,
+                "messages": messages,
+                "tool_names": [tool["function"]["name"] for tool in tools],
+                "generation_config": generation_config,
+                "max_tool_turns": 0,
+            },
+        )
+        self._log_llm_event(
+            "model_request",
+            {
+                "provider": "huggingface",
+                "provider_tool_calling": "none",
+                "turn": 0,
+                "prompt": prompt,
+                "generation_config": generation_config,
+            },
+        )
+        try:
+            result = slm_client.generate(prompt, generation_config)
+        except SLMClientError as exc:
+            self.last_llm_error = str(exc)
+            self._log_llm_event(
+                "model_error",
+                {
+                    "provider": "huggingface",
+                    "provider_tool_calling": "none",
+                    "turn": 0,
+                    "error": self.last_llm_error,
+                },
             )
-            response = client.chat.completions.create(
-                model="tinyllama",    # or "phi3", "mistral", etc.
-                messages=messages,
+            return "I cannot gather my thoughts clearly right now."
+
+        self._record_token_usage(result.usage_metadata)
+        self._log_llm_event(
+            "model_response",
+            {
+                "provider": "huggingface",
+                "provider_tool_calling": "none",
+                "turn": 0,
+                "text": result.text,
+                "function_calls": [],
+                "usage_metadata": result.usage_metadata,
+                "token_usage_total": self.last_token_usage_total,
+                "model": result.model_id,
+                "device": result.device,
+                "generation_config": result.generation_config,
+            },
+        )
+        return result.text
+
+    def _call_slm_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        target_label: str,
+    ) -> str:
+        if self.api is None:
+            raise RuntimeError(
+                "InteractionManager.api is None - pass a GameAPIProvider to "
+                "InteractionManager.__init__ before using SLM tool mode."
             )
-            return response.choices[0].message.content
 
-        Option B — HuggingFace pipeline:
+        slm_client = self._get_slm_client()
+        generation_config = self._slm_generation_config()
+        max_tool_turns = getattr(config, "NPC_SLM_MAX_TOOL_TURNS", 2)
+        tool_results: list[dict[str, Any]] = []
+        self._log_llm_event(
+            "interaction_start",
+            {
+                "provider": "huggingface",
+                "provider_tool_calling": "experimental_text_protocol",
+                "model": slm_client.model_id,
+                "knowledge_mode": getattr(config, "NPC_KNOWLEDGE_MODE", "embodied"),
+                "response_mode": getattr(config, "NPC_RESPONSE_MODE", "deterministic"),
+                "target_label": target_label,
+                "messages": messages,
+                "tool_names": [tool["function"]["name"] for tool in tools],
+                "generation_config": generation_config,
+                "max_tool_turns": max_tool_turns,
+            },
+        )
 
-            from transformers import pipeline
-            # Build a single prompt string from messages using the model's
-            # chat template, then run through the text-generation pipeline.
-            pipe = pipeline("text-generation", model="TinyLlama/TinyLlama-1.1B-Chat-v1.0")
-            prompt = pipe.tokenizer.apply_chat_template(messages, tokenize=False)
-            result = pipe(prompt, max_new_tokens=128)
-            return result[0]["generated_text"].split("assistant")[-1].strip()
+        for turn in range(max_tool_turns + 1):
+            prompt = self._build_slm_tool_prompt(messages, tools, tool_results)
+            self._log_llm_event(
+                "model_request",
+                {
+                    "provider": "huggingface",
+                    "provider_tool_calling": "experimental_text_protocol",
+                    "turn": turn,
+                    "prompt": prompt,
+                    "tool_names": [tool["function"]["name"] for tool in tools],
+                    "generation_config": generation_config,
+                },
+            )
+            try:
+                result = slm_client.generate(prompt, generation_config)
+            except SLMClientError as exc:
+                self.last_llm_error = str(exc)
+                self._log_llm_event(
+                    "model_error",
+                    {
+                        "provider": "huggingface",
+                        "provider_tool_calling": "experimental_text_protocol",
+                        "turn": turn,
+                        "error": self.last_llm_error,
+                    },
+                )
+                return "I cannot gather my thoughts clearly right now."
 
-        Notes
-        ─────
-        - Tool calling is intentionally not supported here. The full context
-          is already in messages[0]. If tool support is added later, promote
-          this to a _call_slm loop matching _call_llm.
-        """
-        raise NotImplementedError("SLM integration not yet implemented. See TODO(Gordan).")
+            self._record_token_usage(result.usage_metadata)
+            self._log_llm_event(
+                "model_response",
+                {
+                    "provider": "huggingface",
+                    "provider_tool_calling": "experimental_text_protocol",
+                    "turn": turn,
+                    "text": result.text,
+                    "function_calls": [],
+                    "usage_metadata": result.usage_metadata,
+                    "token_usage_total": self.last_token_usage_total,
+                    "model": result.model_id,
+                    "device": result.device,
+                    "generation_config": result.generation_config,
+                },
+            )
+
+            try:
+                parsed = self._parse_slm_tool_output(result.text)
+            except ValueError as exc:
+                self.last_llm_error = str(exc)
+                self._log_llm_event(
+                    "tool_error",
+                    {
+                        "provider": "huggingface",
+                        "provider_tool_calling": "experimental_text_protocol",
+                        "turn": turn,
+                        "error": self.last_llm_error,
+                        "raw_text": result.text,
+                    },
+                )
+                return "I cannot make sense of that recollection right now."
+
+            if "final" in parsed:
+                return str(parsed["final"]).strip()
+
+            if turn == max_tool_turns:
+                self.last_llm_error = "SLM exceeded max tool-call turns."
+                self._log_llm_event(
+                    "tool_turn_limit",
+                    {
+                        "provider": "huggingface",
+                        "provider_tool_calling": "experimental_text_protocol",
+                        "turn": turn,
+                        "error": self.last_llm_error,
+                    },
+                )
+                return "I need more time to sort through what I have seen."
+
+            name = parsed["tool"]
+            args = parsed["arguments"]
+            trace_entry = {
+                "provider": "huggingface",
+                "provider_tool_calling": "experimental_text_protocol",
+                "turn": turn,
+                "name": name,
+                "arguments": dict(args),
+            }
+            try:
+                self._validate_slm_tool_call(name, args, tools)
+                result_dict = dispatch_tool_call(self.api, name, dict(args))
+            except (ValueError, KeyError, TypeError) as exc:
+                self.last_llm_error = str(exc)
+                trace_entry["error"] = str(exc)
+                self.last_tool_calls.append(trace_entry)
+                self._log_llm_event("tool_error", trace_entry)
+                return "I cannot make sense of that recollection right now."
+
+            result_dict = self._apply_sharing_policy_to_tool_result(
+                name,
+                result_dict,
+                target_label,
+            )
+            trace_entry["result"] = result_dict
+            self.last_tool_calls.append(trace_entry)
+            self._log_llm_event("tool_call", trace_entry)
+            tool_results.append(
+                {
+                    "tool": name,
+                    "arguments": dict(args),
+                    "result": result_dict,
+                }
+            )
+
+        self.last_llm_error = "SLM tool-call loop exited unexpectedly."
+        self._log_llm_event(
+            "model_error",
+            {
+                "provider": "huggingface",
+                "provider_tool_calling": "experimental_text_protocol",
+                "error": self.last_llm_error,
+            },
+        )
+        return "I need more time to sort through what I have seen."
+
+    def _build_slm_completion_prompt(self, messages: list[dict[str, Any]]) -> str:
+        system_prompt = messages[0]["content"]
+        user_prompt = messages[1]["content"]
+        return (
+            "Complete the NPC answer for this game dialogue.\n\n"
+            f"{system_prompt}\n\n"
+            f"Player question: {user_prompt}\n"
+            "NPC answer:"
+        )
+
+    def _build_slm_tool_prompt(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        tool_results: list[dict[str, Any]],
+    ) -> str:
+        system_prompt = messages[0]["content"]
+        user_prompt = messages[1]["content"]
+        tool_specs = [
+            {
+                "name": tool["function"]["name"],
+                "description": tool["function"].get("description", ""),
+                "parameters": tool["function"].get("parameters", {}),
+            }
+            for tool in tools
+        ]
+        if tool_results:
+            results_text = json.dumps(tool_results, ensure_ascii=True)
+        else:
+            results_text = "[]"
+
+        return (
+            "Complete the NPC answer for this game dialogue.\n\n"
+            f"{system_prompt}\n\n"
+            f"Player question: {user_prompt}\n\n"
+            "You may either answer now or request one tool call.\n"
+            "Output exactly one strict JSON object and no extra text.\n"
+            "For a tool call, use this shape:\n"
+            '{"tool": "get_npc_memory", "arguments": {"npc_id": "npc_0", "filter_label": "red_triangle"}}\n'
+            "For a final answer, use this shape:\n"
+            '{"final": "I saw a crimson flag near the windmill."}\n\n'
+            f"Available tools: {json.dumps(tool_specs, ensure_ascii=True)}\n"
+            f"Previous tool results: {results_text}\n"
+            "JSON:"
+        )
+
+    def _slm_generation_config(self) -> dict[str, Any]:
+        return {
+            "max_new_tokens": getattr(config, "NPC_SLM_MAX_NEW_TOKENS", 96),
+            "do_sample": getattr(config, "NPC_SLM_DO_SAMPLE", False),
+            "temperature": getattr(config, "NPC_SLM_TEMPERATURE", 0.2),
+            "top_p": getattr(config, "NPC_SLM_TOP_P", 0.9),
+        }
+
+    def _parse_slm_tool_output(self, text: str) -> dict[str, Any]:
+        try:
+            data = json.loads(text.strip())
+        except json.JSONDecodeError as exc:
+            raise ValueError("SLM did not return one strict JSON object.") from exc
+        if not isinstance(data, dict):
+            raise ValueError("SLM tool output must be a JSON object.")
+
+        has_final = "final" in data
+        has_tool = "tool" in data or "arguments" in data
+        if has_final == has_tool:
+            raise ValueError("SLM output must contain either final or tool/arguments.")
+
+        if has_final:
+            if not isinstance(data["final"], str) or not data["final"].strip():
+                raise ValueError("SLM final output must be a non-empty string.")
+            return {"final": data["final"]}
+
+        if not isinstance(data.get("tool"), str):
+            raise ValueError("SLM tool output must include a string tool name.")
+        if not isinstance(data.get("arguments"), dict):
+            raise ValueError("SLM tool output must include an arguments object.")
+        return {"tool": data["tool"], "arguments": data["arguments"]}
+
+    def _validate_slm_tool_call(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        tools: list[dict[str, Any]],
+    ) -> None:
+        schema_by_name = {
+            tool["function"]["name"]: tool["function"]
+            for tool in tools
+        }
+        if name not in schema_by_name:
+            raise ValueError(
+                f"Tool '{name}' is not available in this knowledge mode."
+            )
+
+        parameters = schema_by_name[name].get("parameters", {})
+        properties = parameters.get("properties", {})
+        required = parameters.get("required", [])
+        for required_name in required:
+            if required_name not in arguments:
+                raise ValueError(
+                    f"Tool '{name}' missing required argument '{required_name}'."
+                )
+        for arg_name, arg_value in arguments.items():
+            if arg_name not in properties:
+                raise ValueError(
+                    f"Tool '{name}' received unexpected argument '{arg_name}'."
+                )
+            expected_type = properties[arg_name].get("type")
+            if expected_type and not self._slm_argument_matches_type(arg_value, expected_type):
+                raise ValueError(
+                    f"Tool '{name}' argument '{arg_name}' must be {expected_type}."
+                )
+
+    @staticmethod
+    def _slm_argument_matches_type(value: Any, expected_type: str) -> bool:
+        if expected_type == "string":
+            return isinstance(value, str)
+        if expected_type == "integer":
+            return isinstance(value, int) and not isinstance(value, bool)
+        if expected_type == "number":
+            return isinstance(value, (int, float)) and not isinstance(value, bool)
+        if expected_type == "boolean":
+            return isinstance(value, bool)
+        if expected_type == "object":
+            return isinstance(value, dict)
+        if expected_type == "array":
+            return isinstance(value, list)
+        return True

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from typing import Any
 
 from dotenv import load_dotenv
@@ -13,6 +14,21 @@ load_dotenv()
 
 class LLMClientError(RuntimeError):
     """Raised when the provider client cannot complete a model request."""
+
+
+class SLMClientError(RuntimeError):
+    """Raised when the local Hugging Face client cannot complete generation."""
+
+
+@dataclass
+class SLMResult:
+    """Normalized result from a local SLM generation call."""
+
+    text: str
+    usage_metadata: dict[str, Any]
+    model_id: str
+    device: str
+    generation_config: dict[str, Any]
 
 
 class LLMClient:
@@ -264,6 +280,169 @@ class LLMClient:
         return str(response)
 
     _extract_text = extract_text
+
+
+class SLMClient:
+    """Lazy local Hugging Face causal-LM wrapper for SLM response modes."""
+
+    def __init__(
+        self,
+        model_id: str | None = None,
+        device: str = "auto",
+        dtype: str = "auto",
+        tokenizer: Any | None = None,
+        model: Any | None = None,
+    ) -> None:
+        self.model_id = model_id or os.getenv("NPC_SLM_MODEL_ID", "HuggingFaceTB/SmolLM-135M")
+        self.device_preference = device
+        self.dtype_preference = dtype
+        self.tokenizer = tokenizer
+        self.model = model
+        self.device: str | None = None
+        self._torch: Any | None = None
+
+    def generate(
+        self,
+        prompt: str,
+        generation_config: dict[str, Any] | None = None,
+    ) -> SLMResult:
+        """Generate a completion and return text plus local token accounting."""
+        self._ensure_loaded()
+        assert self.tokenizer is not None
+        assert self.model is not None
+        assert self._torch is not None
+        assert self.device is not None
+
+        generation_kwargs = dict(generation_config or {})
+        max_new_tokens = int(generation_kwargs.pop("max_new_tokens", 96))
+        do_sample = bool(generation_kwargs.pop("do_sample", False))
+        temperature = float(generation_kwargs.pop("temperature", 0.2))
+        top_p = float(generation_kwargs.pop("top_p", 0.9))
+
+        model_kwargs: dict[str, Any] = {
+            "max_new_tokens": max_new_tokens,
+            "do_sample": do_sample,
+        }
+        if do_sample:
+            model_kwargs["temperature"] = temperature
+            model_kwargs["top_p"] = top_p
+
+        pad_token_id = getattr(self.tokenizer, "pad_token_id", None)
+        eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
+        if pad_token_id is None and eos_token_id is not None:
+            model_kwargs["pad_token_id"] = eos_token_id
+
+        model_kwargs.update(generation_kwargs)
+
+        try:
+            inputs = self.tokenizer(prompt, return_tensors="pt")
+            inputs = self._move_inputs_to_device(inputs)
+            input_ids = inputs["input_ids"]
+            prompt_token_count = int(input_ids.shape[-1])
+
+            with self._torch.inference_mode():
+                outputs = self.model.generate(**inputs, **model_kwargs)
+
+            output_ids = outputs[0]
+            generated_ids = output_ids[prompt_token_count:]
+            text = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+        except Exception as exc:
+            raise SLMClientError(f"Local SLM generation failed: {exc}") from exc
+
+        candidates_token_count = int(generated_ids.shape[-1])
+        usage_metadata = {
+            "prompt_token_count": prompt_token_count,
+            "candidates_token_count": candidates_token_count,
+            "total_token_count": prompt_token_count + candidates_token_count,
+        }
+        normalized_config = {
+            **model_kwargs,
+            "max_new_tokens": max_new_tokens,
+            "do_sample": do_sample,
+            "temperature": temperature,
+            "top_p": top_p,
+        }
+        return SLMResult(
+            text=text,
+            usage_metadata=usage_metadata,
+            model_id=self.model_id,
+            device=self.device,
+            generation_config=normalized_config,
+        )
+
+    def _ensure_loaded(self) -> None:
+        if self.tokenizer is not None and self.model is not None:
+            if self._torch is None:
+                try:
+                    import torch
+                except Exception as exc:
+                    raise SLMClientError(f"Could not import torch: {exc}") from exc
+                self._torch = torch
+            if self.device is None:
+                self.device = self._resolve_device(self._torch)
+            return
+
+        try:
+            import torch
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+        except Exception as exc:
+            raise SLMClientError(
+                "Could not import local SLM dependencies. Install transformers, "
+                "torch, and safetensors."
+            ) from exc
+
+        self._torch = torch
+        self.device = self._resolve_device(torch)
+        model_kwargs = self._model_load_kwargs(torch)
+
+        try:
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_id)
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_id,
+                **model_kwargs,
+            )
+            self.model.to(self.device)
+            self.model.eval()
+        except Exception as exc:
+            raise SLMClientError(f"Could not load local SLM '{self.model_id}': {exc}") from exc
+
+    def _resolve_device(self, torch: Any) -> str:
+        requested = (self.device_preference or "auto").lower()
+        if requested != "auto":
+            return requested
+        if torch.cuda.is_available():
+            return "cuda"
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return "mps"
+        return "cpu"
+
+    def _model_load_kwargs(self, torch: Any) -> dict[str, Any]:
+        requested = (self.dtype_preference or "auto").lower()
+        if requested == "auto":
+            return {}
+
+        dtype_map = {
+            "float16": torch.float16,
+            "fp16": torch.float16,
+            "bfloat16": torch.bfloat16,
+            "bf16": torch.bfloat16,
+            "float32": torch.float32,
+            "fp32": torch.float32,
+        }
+        if requested not in dtype_map:
+            raise SLMClientError(
+                f"Unsupported NPC_SLM_DTYPE '{self.dtype_preference}'. "
+                f"Use one of: {sorted(dtype_map)} or 'auto'."
+            )
+        return {"torch_dtype": dtype_map[requested]}
+
+    def _move_inputs_to_device(self, inputs: Any) -> Any:
+        if hasattr(inputs, "to"):
+            return inputs.to(self.device)
+        return {
+            key: value.to(self.device) if hasattr(value, "to") else value
+            for key, value in inputs.items()
+        }
 
 
 if __name__ == "__main__":
