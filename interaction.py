@@ -27,12 +27,14 @@ from entities import Player, NPC
 from npc_brain import NPCBrain
 from rlang_engine import (
     extract_coordinates_from_text,
-    get_natural_location_name,
+    extract_regions_from_text,
     get_natural_object_name,
+    region_of,
 )
 from game_api_interface import (
     GameAPIProvider,
     dispatch_tool_call,
+    get_natural_position_name,
     get_tool_schemas_for_knowledge_mode,
 )
 from llm import LLMClient, LLMClientError
@@ -132,13 +134,16 @@ class InteractionManager:
                 f"I've only explored {brain.state.coverage:.0%} of this region so far."
             )
 
-        natural_locations = [get_natural_location_name(x, y) for x, y in locations]
+        world_size = brain.state.world_size
+        natural_locations = [
+            get_natural_position_name(x, y, world_size) for x, y in locations
+        ]
         count = len(locations)
         if count == 1:
-            return f"Aye, I found a {natural_name} {natural_locations[0]}."
+            return f"Aye, I found a {natural_name} in {natural_locations[0]}."
 
         location_list = ", ".join(natural_locations)
-        return f"I've seen {count} {natural_name}s at: {location_list}."
+        return f"I've seen {count} {natural_name}s in: {location_list}."
 
     # ── LLM / SLM entry point ─────────────────────────────────────────────────
 
@@ -223,7 +228,6 @@ class InteractionManager:
     def _build_system_prompt(
         self,
         npc_id: str,
-        target_label: str,
         target_natural_name: str,
         context_lines: list[str],
         is_embodied: bool,
@@ -236,6 +240,11 @@ class InteractionManager:
         Separating this from the user message is required for tool calling:
         the system message is injected once and persists across the entire
         tool-call loop; the user message carries only the player's question.
+
+        The LLM only ever sees natural-language identifiers: the item is
+        "crimson flag", locations are region phrases like "the far southeast
+        corner". Internal labels (red_triangle) and raw coordinates never
+        appear on this surface — grounding/scoring happens server-side.
 
         Experiment conditions handled here
         ────────────────────────────────────
@@ -253,13 +262,15 @@ class InteractionManager:
                 "personally witnessed during your travels. "
                 "Never fabricate or guess at locations you have not visited. "
                 "Use the get_npc_memory tool to consult your observations and "
-                "get_exploration_status to acknowledge the limits of what you know."
-                "Use the set_npc_target tool to navigate to the target location. "
+                "get_exploration_status to acknowledge the limits of what you know. "
+                "When you know where the item is, use set_npc_target to walk there "
+                "rather than just describing the spot."
             )
         else:
             knowledge_instruction = (
                 "You have complete knowledge of this region. "
-                "Use the get_all_objects tool to locate any item with certainty."
+                "Use the get_all_objects tool to locate any item with certainty, "
+                "then set_npc_target to walk there."
             )
 
         if is_competitive:
@@ -275,12 +286,11 @@ class InteractionManager:
             f"You are a seasoned traveler in Skyrim. {knowledge_instruction}"
             f"{sharing_instruction}\n\n"
             f"Your current observations:\n{context_str}\n\n"
-            f"The traveler is asking about target label {target_label!r}, "
-            f"known in local speech as the {target_natural_name}.\n"
+            f"The traveler is asking about the {target_natural_name}.\n"
             f"Your NPC identifier is {npc_id!r}. Use it when calling NPC-specific tools.\n"
-            "Respond in 1–2 sentences, in character."
-            "If the player asks you to show where something is, use the set_npc_target tool call to navigate there."
-            "Do not ask for confirmation or any follow up questions.."
+            "Respond in 1–2 sentences, in character. "
+            "If the traveler asks you to show where something is, call set_npc_target "
+            "to navigate there. Do not ask for confirmation or follow-up."
         )
 
     def _build_messages(
@@ -315,7 +325,6 @@ class InteractionManager:
 
         system_content = self._build_system_prompt(
             npc_id=npc_id,
-            target_label=label,
             target_natural_name=natural_name,
             context_lines=context_lines,
             is_embodied=is_embodied,
@@ -325,7 +334,7 @@ class InteractionManager:
 
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_content},
-            {"role": "user",   "content": f"Where is the {natural_name}?"},
+            {"role": "user",   "content": f"Please show me where the {natural_name} is."},
         ]
         return messages, tools
 
@@ -356,9 +365,16 @@ class InteractionManager:
         user_prompt = messages[1]["content"]
         contents = [llm_client.user_content(user_prompt)]
         gemini_tools = llm_client.to_gemini_tools(tools)
+        # thinking_budget=0 disables Gemini's internal reasoning tokens, which
+        # otherwise share the max_output_tokens budget and regularly crowd out
+        # the NPC utterance — we observed 21% empty responses on 2.5-flash at
+        # 128 tokens before setting this. NPC dialogue is a persona task, not a
+        # reasoning task, so there is nothing to think about. Judge model has
+        # its own call path and picks its own budget (2.5-pro refuses 0).
         generation_config = {
             "temperature": getattr(config, "NPC_LLM_TEMPERATURE", 0.4),
             "max_output_tokens": getattr(config, "NPC_LLM_MAX_OUTPUT_TOKENS", 128),
+            "thinking_config": {"thinking_budget": 0},
         }
         max_tool_turns = getattr(config, "NPC_LLM_MAX_TOOL_TURNS", 4)
         self._log_llm_event(
@@ -518,38 +534,46 @@ class InteractionManager:
         result: dict[str, Any],
         target_label: str,
     ) -> dict[str, Any]:
-        """Prevent competitive NPCs from leaking the target through tool data."""
+        """Prevent competitive NPCs from leaking the target through tool data.
+
+        All matching is done on Skyrim natural names since that is the only
+        identifier the LLM-facing tool payloads carry.
+        """
         if not getattr(config, "NPC_COMPETING", False):
             return result
 
         redacted = dict(result)
-        target_name = get_natural_object_name(target_label).lower()
+        target_name = get_natural_object_name(target_label)
+        target_name_lower = target_name.lower()
 
         if tool_name == "get_npc_memory":
-            locations = dict(redacted.get("shape_locations", {}))
-            if target_label in locations:
-                locations.pop(target_label)
-                redacted["shape_locations"] = locations
-                redacted["withheld_for_competition"] = target_label
+            observations = {
+                name: locs
+                for name, locs in redacted.get("observations", {}).items()
+                if name.lower() != target_name_lower
+            }
+            if len(observations) != len(redacted.get("observations", {})):
+                redacted["observations"] = observations
+                redacted["withheld_for_competition"] = target_name
             redacted["context_lines"] = [
                 line
                 for line in redacted.get("context_lines", [])
-                if target_name not in line.lower()
+                if target_name_lower not in line.lower()
             ]
         elif tool_name in {"get_all_objects", "get_nearby_objects"}:
             objects = [
                 obj
                 for obj in redacted.get("objects", [])
-                if obj.get("label") != target_label
+                if obj.get("name", "").lower() != target_name_lower
             ]
             if len(objects) != len(redacted.get("objects", [])):
                 redacted["objects"] = objects
-                redacted["withheld_for_competition"] = target_label
+                redacted["withheld_for_competition"] = target_name
         elif tool_name == "get_object_at":
             obj = redacted.get("object")
-            if obj and obj.get("label") == target_label:
+            if obj and obj.get("name", "").lower() == target_name_lower:
                 redacted["object"] = None
-                redacted["withheld_for_competition"] = target_label
+                redacted["withheld_for_competition"] = target_name
 
         return redacted
 

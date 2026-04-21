@@ -1,0 +1,17 @@
+{
+  "run_id": "20260420T225550_seed8_experiment_embodied_llm_trial8",
+  "tag": "experiment_embodied_llm_trial8",
+  "outcome": "experiment_complete",
+  "tick_count": 40,
+  "interaction_count": 1,
+  "duration_seconds": 3.78153,
+  "started_at": "2026-04-20T22:55:50.943349+00:00",
+  "ended_at": "2026-04-20T22:55:54.724879+00:00",
+  "stats": {
+    "npc_steps": 40,
+    "npc_coverage": 0.3778,
+    "target_was_observed": false,
+    "outcome_bucket": "off_topic",
+    "response_time_ms": 1752.56999998237
+  }
+}

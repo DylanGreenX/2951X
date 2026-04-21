@@ -33,9 +33,12 @@ class PositionDict(TypedDict):
 
 
 class ObjectDict(TypedDict):
-    label: str          # internal key, e.g. "red_triangle"
-    natural_name: str   # Skyrim vocabulary name, e.g. "crimson flag"
+    """LLM-facing object record. Internal labels like 'red_triangle' never
+    appear here — the LLM reasons about items by their Skyrim natural name
+    (e.g. 'crimson flag') and acts on them by position."""
+    name: str           # Skyrim vocabulary name, e.g. "crimson flag"
     position: PositionDict
+    region: str         # natural region phrase, e.g. "the far southeast corner"
     collected: bool
 
 
@@ -44,18 +47,17 @@ class ObjectDict(TypedDict):
 class WorldInfoDict(TypedDict):
     """Static world metadata."""
     size: int                    # grid is size × size
-    target_label: str            # e.g. "red_triangle"
-    target_natural_name: str     # e.g. "crimson flag"
+    target_name: str             # Skyrim natural name, e.g. "crimson flag"
 
 
 class NPCStateDict(TypedDict):
     """Live state of a single NPC."""
     npc_id: str
     position: PositionDict
+    region: str                    # natural region phrase for position
     sight_range: int
     steps_taken: int
-    goal_label: Optional[str]         # None → wandering NPC
-    goal_natural_name: Optional[str]  # None → wandering NPC
+    goal_name: Optional[str]       # Skyrim natural name, None for wandering NPC
 
 
 class PlayerStateDict(TypedDict):
@@ -72,10 +74,12 @@ class NearbyObjectsDict(TypedDict):
 
 
 class NPCMemoryDict(TypedDict):
-    """Everything the NPC personally observed."""
+    """Everything the NPC personally observed. Keyed by Skyrim natural name
+    (e.g. 'crimson flag'), never by internal label — the LLM only ever sees
+    one identifier for each object."""
     npc_id: str
     coverage: float                              # fraction of world explored, 0.0–1.0
-    shape_locations: dict[str, list[PositionDict]]  # label → list of positions seen
+    observations: dict[str, list[PositionDict]]  # natural name → list of positions seen
     context_lines: list[str]                     # natural-language sentences for LLM injection
 
 
@@ -157,15 +161,15 @@ class GameAPIProvider(ABC):
 
     @abstractmethod
     def get_npc_memory(
-        self, npc_id: str, filter_label: Optional[str] = None
+        self, npc_id: str, filter_name: Optional[str] = None
     ) -> NPCMemoryDict:
         """
         Return the NPC's personal observation log — only items the NPC has
         personally witnessed during its travels. Never returns the full game
         state; this is embodied knowledge only.
 
-        Pass filter_label (e.g. "red_triangle") to narrow results to a single
-        object type. Omit it to retrieve the complete observation history.
+        Pass filter_name (e.g. "crimson flag") to narrow results to one object
+        type by Skyrim natural name. Omit it to retrieve the full history.
         """
         ...
 
@@ -307,11 +311,12 @@ GAME_TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "type": "string",
                         "description": "The NPC identifier.",
                     },
-                    "filter_label": {
+                    "filter_name": {
                         "type": "string",
                         "description": (
-                            "Optional. Restrict results to a single object type, "
-                            "e.g. 'red_triangle'. Omit to retrieve all observations."
+                            "Optional. Restrict results to a single object type "
+                            "by Skyrim name, e.g. 'crimson flag'. "
+                            "Omit to retrieve all observations."
                         ),
                     },
                 },
@@ -526,7 +531,7 @@ def dispatch_tool_call(
                                  ),
         "get_npc_memory":        lambda: api.get_npc_memory(
                                      arguments["npc_id"],
-                                     arguments.get("filter_label"),
+                                     arguments.get("filter_name"),
                                  ),
         "get_exploration_status": lambda: api.get_exploration_status(arguments["npc_id"]),
         "get_object_at":         lambda: api.get_object_at(arguments["x"], arguments["y"]),

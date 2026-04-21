@@ -1,0 +1,17 @@
+{
+  "run_id": "20260421T000900_seed13_experiment_embodied_llm_attn-color_trial13",
+  "tag": "experiment_embodied_llm_attn-color_trial13",
+  "outcome": "experiment_complete",
+  "tick_count": 40,
+  "interaction_count": 1,
+  "duration_seconds": 11.200687,
+  "started_at": "2026-04-21T00:09:00.218192+00:00",
+  "ended_at": "2026-04-21T00:09:11.418879+00:00",
+  "stats": {
+    "npc_steps": 40,
+    "npc_coverage": 0.4356,
+    "target_was_observed": false,
+    "outcome_bucket": "correct_abstention",
+    "response_time_ms": 2480.1177000044845
+  }
+}

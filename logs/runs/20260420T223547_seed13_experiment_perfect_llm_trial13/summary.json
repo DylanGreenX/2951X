@@ -1,0 +1,17 @@
+{
+  "run_id": "20260420T223547_seed13_experiment_perfect_llm_trial13",
+  "tag": "experiment_perfect_llm_trial13",
+  "outcome": "experiment_complete",
+  "tick_count": 0,
+  "interaction_count": 1,
+  "duration_seconds": 5.712561,
+  "started_at": "2026-04-20T22:35:47.606299+00:00",
+  "ended_at": "2026-04-20T22:35:53.318860+00:00",
+  "stats": {
+    "npc_steps": 0,
+    "npc_coverage": 1.0,
+    "target_was_observed": true,
+    "outcome_bucket": "correct",
+    "response_time_ms": 5707.425200002035
+  }
+}

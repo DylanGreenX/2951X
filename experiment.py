@@ -16,7 +16,38 @@ from entities import Player, NPC
 from npc_brain import NPCBrainGoalDriven, NPCBrainWandering
 from interaction import InteractionManager
 from pygame_game_api import PygameGameAPI
-from rlang_engine import get_natural_object_name, extract_coordinates_from_text
+from rlang_engine import get_natural_object_name
+from game_log import GameLogger
+import metrics
+import judge
+
+
+@dataclass
+class _SavedConfig:
+    """Snapshot/restore for the handful of config globals an ExperimentCondition
+    can override. Keeps the trial body free of save/restore boilerplate."""
+    response_mode: str
+    knowledge_mode: str
+    competing: bool
+    selective_attention: str | None
+    memory_decay_ticks: int | None
+
+    @classmethod
+    def snapshot(cls) -> "_SavedConfig":
+        return cls(
+            response_mode=config.NPC_RESPONSE_MODE,
+            knowledge_mode=config.NPC_KNOWLEDGE_MODE,
+            competing=config.NPC_COMPETING,
+            selective_attention=config.NPC_SELECTIVE_ATTENTION,
+            memory_decay_ticks=config.NPC_MEMORY_DECAY_TICKS,
+        )
+
+    def restore(self) -> None:
+        config.NPC_RESPONSE_MODE = self.response_mode
+        config.NPC_KNOWLEDGE_MODE = self.knowledge_mode
+        config.NPC_COMPETING = self.competing
+        config.NPC_SELECTIVE_ATTENTION = self.selective_attention
+        config.NPC_MEMORY_DECAY_TICKS = self.memory_decay_ticks
 
 
 @dataclass
@@ -24,6 +55,13 @@ class ExperimentCondition:
     name: str
     knowledge_mode: str  # "perfect" | "embodied"
     response_mode: str   # "deterministic" | "llm" | "slm"
+
+    # Extended modality overrides. All default to "inherit from config"; when
+    # set on a condition, ExperimentRunner._run_trial applies the override for
+    # that trial only. See README "Configuring experiments" for semantics.
+    competing: bool = False
+    selective_attention: str | None = None  # "color" | "shape" | None
+    memory_decay_ticks: int | None = None
 
 
 class ExperimentRunner:
@@ -38,36 +76,94 @@ class ExperimentRunner:
         return results
 
     def _run_trial(self, condition: ExperimentCondition, trial: int) -> Dict[str, Any]:
-        world, player, npc, brain = self._init_trial(trial, condition.knowledge_mode)
-
-        if condition.knowledge_mode == "embodied":
-            for _ in range(150):
-                brain.tick()
-
-        npc_knowledge = brain.state.to_llm_context().copy()
-        target_label = f"{world.target_color}_{world.target_shape}"
-        target_location = self._find_target_location(world, target_label)
-        interaction_manager = InteractionManager(
-            api=PygameGameAPI.from_game(world, player, brain),
-            enforce_grounding=False,
-        )
-
-        original_mode = config.NPC_RESPONSE_MODE
-        original_knowledge_mode = config.NPC_KNOWLEDGE_MODE
+        # Modality flags have to be applied BEFORE init_trial because the goal
+        # label in competitive mode depends on NPC_COMPETING, and selective
+        # attention / decay are read inside RLangState.observe during the
+        # exploration warmup below.
+        saved = _SavedConfig.snapshot()
         config.NPC_RESPONSE_MODE = condition.response_mode
         config.NPC_KNOWLEDGE_MODE = condition.knowledge_mode
+        config.NPC_COMPETING = condition.competing
+        config.NPC_SELECTIVE_ATTENTION = condition.selective_attention
+        config.NPC_MEMORY_DECAY_TICKS = condition.memory_decay_ticks
+
         try:
+            world, player, npc, brain = self._init_trial(trial, condition.knowledge_mode, condition)
+
+            # Tag encodes every axis so run_ids are self-describing on disk.
+            tag_parts = [
+                "experiment",
+                condition.knowledge_mode,
+                condition.response_mode,
+            ]
+            if condition.competing:
+                tag_parts.append("competing")
+            if condition.selective_attention:
+                tag_parts.append(f"attn-{condition.selective_attention}")
+            if condition.memory_decay_ticks is not None:
+                tag_parts.append(f"decay-{condition.memory_decay_ticks}")
+            tag_parts.append(f"trial{trial}")
+            tag = "_".join(tag_parts)
+
+            logger = GameLogger.start(
+                world, player, npc, brain,
+                tag=tag, seed=trial,
+                extra_meta={
+                    "condition_name": condition.name,
+                    "knowledge_mode": condition.knowledge_mode,
+                    "response_mode": condition.response_mode,
+                    "competing": condition.competing,
+                    "selective_attention": condition.selective_attention,
+                    "memory_decay_ticks": condition.memory_decay_ticks,
+                    "trial": trial,
+                },
+            )
+
+            if condition.knowledge_mode == "embodied":
+                for _ in range(config.NPC_EXPLORATION_TICKS):
+                    brain.tick()
+                    logger.log_tick(world, player, npc, brain)
+
+            npc_knowledge = brain.state.to_llm_context().copy()
+            target_label = f"{world.target_color}_{world.target_shape}"
+            target_location = self._find_target_location(world, target_label)
+            interaction_manager = InteractionManager(
+                api=PygameGameAPI.from_game(world, player, brain),
+                enforce_grounding=False,
+            )
+
             question = self._create_natural_question(world.target_color, world.target_shape)
+            interaction_id = logger.log_interaction_pre(
+                world, player, npc, brain, world.target_color, world.target_shape
+            )
             start_time = time.perf_counter()
             _, response_text = interaction_manager.start_interaction(
                 brain, world.target_color, world.target_shape
             )
             response_time_ms = (time.perf_counter() - start_time) * 1000
+            logger.log_interaction_summary(
+                interaction_id, interaction_manager, brain, world,
+                world.target_color, world.target_shape,
+                question, response_text,
+            )
         finally:
-            config.NPC_RESPONSE_MODE = original_mode
-            config.NPC_KNOWLEDGE_MODE = original_knowledge_mode
+            saved.restore()
 
-        metrics = self._evaluate_response(response_text, target_location, npc_knowledge)
+        metrics_dict = self._evaluate_response(
+            response_text, brain, world, target_label, target_location,
+            tool_calls=interaction_manager.last_tool_calls,
+        )
+
+        logger.end(
+            outcome="experiment_complete",
+            extra_stats={
+                "npc_steps": npc.steps_taken,
+                "npc_coverage": round(brain.state.coverage, 4),
+                "target_was_observed": brain.state.seen_label(target_label),
+                "outcome_bucket": metrics_dict.get("outcome_bucket"),
+                "response_time_ms": response_time_ms,
+            },
+        )
 
         return {
             'trial': trial,
@@ -90,21 +186,39 @@ class ExperimentRunner:
             'target_was_observed': brain.state.seen_label(target_label),
             'knowledge_mode': condition.knowledge_mode,
             'response_mode': condition.response_mode,
-            **metrics
+            'competing': condition.competing,
+            'selective_attention': condition.selective_attention,
+            'memory_decay_ticks': condition.memory_decay_ticks,
+            'run_id': logger.run_id,
+            **metrics_dict
         }
 
-    def _init_trial(self, seed: int, knowledge_mode: str):
+    def _init_trial(
+        self,
+        seed: int,
+        knowledge_mode: str,
+        condition: ExperimentCondition | None = None,
+    ):
         world = GameWorld(target_color="red", target_shape="triangle", seed=seed)
         player = Player(*config.PLAYER_START, sight_range=config.PLAYER_SIGHT_RANGE)
         npc = NPC(*config.NPC_START, sight_range=config.NPC_SIGHT_RANGE)
-        brain = NPCBrainGoalDriven(npc, world, goal_label="blue_circle")
+
+        # Competitive mode: NPC chases the same item the player is looking for,
+        # so its observation path is biased toward the target. The sharing
+        # policy in interaction.py separately handles withholding.
+        if condition and condition.competing:
+            goal_label = f"{world.target_color}_{world.target_shape}"
+        else:
+            goal_label = "blue_circle"
+        brain = NPCBrainGoalDriven(npc, world, goal_label=goal_label)
+
         if knowledge_mode == "perfect":
             self._give_perfect_knowledge(brain, world)
         return world, player, npc, brain
 
     def _create_natural_question(self, target_color: str, target_shape: str) -> str:
         label = f"{target_color}_{target_shape}"
-        return f"Where is the {get_natural_object_name(label)}?"
+        return f"Please show me where the {get_natural_object_name(label)} is."
 
     def _give_perfect_knowledge(self, brain, world):
         for x in range(world.size):
@@ -121,38 +235,83 @@ class ExperimentRunner:
                 return (shape.x, shape.y)
         return None
 
-    def _evaluate_response(self, response: str, target_location: tuple, npc_knowledge: List[str]) -> Dict[str, float]:
-        return {
-            'accuracy': self._eval_accuracy(response, target_location),
-            'relevance': self._eval_relevance(response, target_location),
-            'groundedness': self._eval_groundedness(response, npc_knowledge),
+    def _evaluate_response(
+        self,
+        response: str,
+        brain,
+        world,
+        target_label: str,
+        target_location: tuple | None,
+        *,
+        tool_calls: list | None = None,
+    ) -> Dict[str, Any]:
+        """
+        Structural, claim-level scoring stratified by whether the NPC actually
+        observed the target. Accepts the tool-call trace so correctness can
+        resolve via set_npc_target action in addition to coord / region text.
+        See metrics.py for bucket definitions.
+
+        Naturalness is scored only by the LLM judge — regex cannot evaluate
+        style — and is surfaced as a separate axis per the 4-way analysis
+        (accuracy × naturalness × knowledge × response-mode).
+        """
+        observed = brain.state.shape_locations
+        target_was_observed = brain.state.seen_label(target_label)
+
+        outcome = metrics.classify_outcome(
+            response, target_label, target_was_observed, target_location,
+            tool_calls=tool_calls, world_size=world.size,
+        )
+        grounded = metrics.score_groundedness(response, target_label, observed)
+        relevance = metrics.score_relevance(response, target_label)
+
+        bucket = outcome["outcome_bucket"]
+        result: Dict[str, Any] = {
+            # Regex scoring — the fast path
+            "outcome_bucket": bucket,
+            "correct_via": outcome.get("correct_via"),
+            "chebyshev_distance": outcome["chebyshev_distance"],
+            "had_mixed_content": outcome["had_mixed_content"],
+            "groundedness_rate": grounded["rate"],
+            "n_claims": grounded["n_claims"],
+            "n_grounded": grounded["n_grounded"],
+            "n_shape_confusion": grounded["n_shape_confusion"],
+            "n_fabricated": grounded["n_fabricated"],
+            "on_topic": relevance["on_topic"],
+            "committal": relevance["committal"],
+            "false_refusal": bucket == "false_refusal",
         }
 
-    def _eval_accuracy(self, response: str, target_location: tuple) -> float:
-        if target_location is None:
-            negative_indicators = ["haven't seen", "don't know", "haven't found", "not seen"]
-            return 1.0 if any(ind in response.lower() for ind in negative_indicators) else 0.0
-        mentioned_coords = extract_coordinates_from_text(response)
-        return 1.0 if target_location in mentioned_coords else 0.0
-
-    def _eval_relevance(self, response: str, target_location: tuple) -> float:
-        if target_location is None:
-            return 1.0 if any(word in response.lower() for word in ["haven't", "don't", "not", "no"]) else 0.0
-        if target_location in extract_coordinates_from_text(response):
-            return 1.0
-        if any(word in response.lower() for word in ["near", "by", "outside", "area", "around", "close"]):
-            return 0.5
-        if any(word in response.lower() for word in ["seen", "found", "spotted"]):
-            return 0.3
-        return 0.0
-
-    def _eval_groundedness(self, response: str, npc_knowledge: List[str]) -> float:
-        response_coords = extract_coordinates_from_text(response)
-        knowledge_coords = extract_coordinates_from_text(" ".join(npc_knowledge))
-        if not response_coords:
-            return 1.0
-        grounded = sum(1 for coord in response_coords if coord in knowledge_coords)
-        return grounded / len(response_coords)
+        # Optional LLM judge — dual-logged with regex so we can compute
+        # per-bucket agreement and surface the cases where they disagree.
+        # Also produces the naturalness score (regex cannot do style).
+        if getattr(config, "NPC_USE_LLM_JUDGE", False):
+            j = judge.classify(
+                response, target_label, target_location,
+                target_was_observed, observed,
+                model=getattr(config, "NPC_JUDGE_MODEL", "gemini-2.5-flash"),
+                tool_calls=tool_calls,
+                world_size=world.size,
+            )
+            j_bucket = j.get("outcome_bucket", "judge_error")
+            result.update({
+                "judge_bucket":          j_bucket,
+                "judge_correct_via":     j.get("correct_via"),
+                "judge_chebyshev":       j.get("chebyshev_distance"),
+                "judge_had_mixed":       j.get("had_mixed_content"),
+                "judge_on_topic":        j.get("on_topic"),
+                "judge_committal":       j.get("committal"),
+                "judge_n_claims":        j.get("n_claims"),
+                "judge_n_grounded":      j.get("n_grounded"),
+                "judge_n_shape_conf":    j.get("n_shape_confusion"),
+                "judge_n_fabricated":    j.get("n_fabricated"),
+                "judge_groundedness":    j.get("groundedness_rate"),
+                "judge_naturalness":     j.get("naturalness"),
+                "judge_reasoning":       j.get("reasoning"),
+                "judge_error":           j.get("judge_error"),
+                "regex_judge_agree":     j_bucket == bucket,
+            })
+        return result
 
 
 CORE_CONDITIONS = [
@@ -162,6 +321,25 @@ CORE_CONDITIONS = [
     ExperimentCondition("Embodied + Deterministic", "embodied", "deterministic"),
     ExperimentCondition("Embodied + LLM", "embodied", "llm"),
     ExperimentCondition("Embodied + SLM", "embodied", "slm"),
+]
+
+
+# Extended modalities — LLM-only by design. Each modality changes either what
+# the NPC knows when asked or what it chooses to reveal; running deterministic
+# responses across them would be lookup-table variants and miss the point.
+EXTENDED_CONDITIONS = [
+    ExperimentCondition(
+        "Embodied + LLM + Competitive", "embodied", "llm",
+        competing=True,
+    ),
+    ExperimentCondition(
+        "Embodied + LLM + MemoryDecay", "embodied", "llm",
+        memory_decay_ticks=20,
+    ),
+    ExperimentCondition(
+        "Embodied + LLM + SelectiveAttention", "embodied", "llm",
+        selective_attention="color",
+    ),
 ]
 
 
@@ -188,4 +366,4 @@ def run_core_experiments(num_trials: int = 50, response_filter: str = None) -> p
 if __name__ == "__main__":
     results = run_core_experiments(num_trials=5, response_filter="deterministic")
     print("Sample results:")
-    print(results[['condition', 'response_time_ms', 'accuracy', 'target_was_observed']].head())
+    print(results[['condition', 'response_time_ms', 'outcome_bucket', 'target_was_observed']].head())
