@@ -56,8 +56,10 @@ NPC_SELECTIVE_ATTENTION: str | None = None  # "color" | "shape" | None
 # Response scoring — when True, the experiment runs an LLM-based judge in
 # addition to the regex metrics and dual-logs both. Judge model defaults to
 # gemini-2.5-flash (different tier than the agent for independence).
-NPC_USE_LLM_JUDGE = False
-NPC_JUDGE_MODEL = "gemini-2.5-flash"
+NPC_USE_LLM_JUDGE = True
+# Judge must differ from the agent model so dual-logged agreement is not
+# self-grading. Agent is now gemini-2.5-flash, so judge moves up to 2.5-pro.
+NPC_JUDGE_MODEL = "gemini-2.5-pro"
 NPC_OBSERVED_CELLS_VISIBLE = False # when False, NPC sight range and observed cells are not visible to player
 # "deterministic" | "llm" | "slm"
 NPC_RESPONSE_MODE = "llm"
@@ -117,4 +119,6 @@ PLAYER_COLOR = (255, 255, 255)
 TEXT_COLOR = (200, 200, 200)
 HIGHLIGHT_COLOR = (100, 200, 255)
 
-DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite-preview" # 500 requests/day
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"  # paid tier; reliable text output
+# Note: gemini-2.5-flash-lite is cheaper but returns 0 output tokens on ~15%
+# of trials after one tool call, leaving response_text empty. Flash doesn't.

@@ -267,7 +267,13 @@ class LLMClient:
 
     @staticmethod
     def extract_text(response: Any) -> str:
-        """Best-effort conversion of a GenAI response into plain text."""
+        """Best-effort conversion of a GenAI response into plain text.
+
+        Returns "" (not repr(response)) when the response carries no text
+        parts — models that return empty content, burn their output budget
+        on thinking tokens, or hit a safety filter should surface as an
+        empty string, not a raw SDK debug dump leaking into experiments.
+        """
         text = getattr(response, "text", None)
         if text:
             return text
@@ -285,10 +291,7 @@ class LLMClient:
                 if part_text:
                     parts.append(part_text)
 
-        if parts:
-            return "\n".join(parts)
-
-        return str(response)
+        return "\n".join(parts) if parts else ""
 
     _extract_text = extract_text
 

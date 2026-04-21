@@ -4,3 +4,4 @@
 .env
 *.pyc
 llm_interactions.jsonl
+EXPERIMENT_REPORT.md

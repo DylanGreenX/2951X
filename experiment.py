@@ -23,10 +23,45 @@ import judge
 
 
 @dataclass
+class _SavedConfig:
+    """Snapshot/restore for the handful of config globals an ExperimentCondition
+    can override. Keeps the trial body free of save/restore boilerplate."""
+    response_mode: str
+    knowledge_mode: str
+    competing: bool
+    selective_attention: str | None
+    memory_decay_ticks: int | None
+
+    @classmethod
+    def snapshot(cls) -> "_SavedConfig":
+        return cls(
+            response_mode=config.NPC_RESPONSE_MODE,
+            knowledge_mode=config.NPC_KNOWLEDGE_MODE,
+            competing=config.NPC_COMPETING,
+            selective_attention=config.NPC_SELECTIVE_ATTENTION,
+            memory_decay_ticks=config.NPC_MEMORY_DECAY_TICKS,
+        )
+
+    def restore(self) -> None:
+        config.NPC_RESPONSE_MODE = self.response_mode
+        config.NPC_KNOWLEDGE_MODE = self.knowledge_mode
+        config.NPC_COMPETING = self.competing
+        config.NPC_SELECTIVE_ATTENTION = self.selective_attention
+        config.NPC_MEMORY_DECAY_TICKS = self.memory_decay_ticks
+
+
+@dataclass
 class ExperimentCondition:
     name: str
     knowledge_mode: str  # "perfect" | "embodied"
     response_mode: str   # "deterministic" | "llm" | "slm"
+
+    # Extended modality overrides. All default to "inherit from config"; when
+    # set on a condition, ExperimentRunner._run_trial applies the override for
+    # that trial only. See README "Configuring experiments" for semantics.
+    competing: bool = False
+    selective_attention: str | None = None  # "color" | "shape" | None
+    memory_decay_ticks: int | None = None
 
 
 class ExperimentRunner:
@@ -41,40 +76,62 @@ class ExperimentRunner:
         return results
 
     def _run_trial(self, condition: ExperimentCondition, trial: int) -> Dict[str, Any]:
-        world, player, npc, brain = self._init_trial(trial, condition.knowledge_mode)
-
-        # One log per trial. Tag captures both condition axes so the
-        # on-disk run_id is self-describing.
-        tag = f"experiment_{condition.knowledge_mode}_{condition.response_mode}_trial{trial}"
-        logger = GameLogger.start(
-            world, player, npc, brain,
-            tag=tag, seed=trial,
-            extra_meta={
-                "condition_name": condition.name,
-                "knowledge_mode": condition.knowledge_mode,
-                "response_mode": condition.response_mode,
-                "trial": trial,
-            },
-        )
-
-        if condition.knowledge_mode == "embodied":
-            for _ in range(config.NPC_EXPLORATION_TICKS):
-                brain.tick()
-                logger.log_tick(world, player, npc, brain)
-
-        npc_knowledge = brain.state.to_llm_context().copy()
-        target_label = f"{world.target_color}_{world.target_shape}"
-        target_location = self._find_target_location(world, target_label)
-        interaction_manager = InteractionManager(
-            api=PygameGameAPI.from_game(world, player, brain),
-            enforce_grounding=False,
-        )
-
-        original_mode = config.NPC_RESPONSE_MODE
-        original_knowledge_mode = config.NPC_KNOWLEDGE_MODE
+        # Modality flags have to be applied BEFORE init_trial because the goal
+        # label in competitive mode depends on NPC_COMPETING, and selective
+        # attention / decay are read inside RLangState.observe during the
+        # exploration warmup below.
+        saved = _SavedConfig.snapshot()
         config.NPC_RESPONSE_MODE = condition.response_mode
         config.NPC_KNOWLEDGE_MODE = condition.knowledge_mode
+        config.NPC_COMPETING = condition.competing
+        config.NPC_SELECTIVE_ATTENTION = condition.selective_attention
+        config.NPC_MEMORY_DECAY_TICKS = condition.memory_decay_ticks
+
         try:
+            world, player, npc, brain = self._init_trial(trial, condition.knowledge_mode, condition)
+
+            # Tag encodes every axis so run_ids are self-describing on disk.
+            tag_parts = [
+                "experiment",
+                condition.knowledge_mode,
+                condition.response_mode,
+            ]
+            if condition.competing:
+                tag_parts.append("competing")
+            if condition.selective_attention:
+                tag_parts.append(f"attn-{condition.selective_attention}")
+            if condition.memory_decay_ticks is not None:
+                tag_parts.append(f"decay-{condition.memory_decay_ticks}")
+            tag_parts.append(f"trial{trial}")
+            tag = "_".join(tag_parts)
+
+            logger = GameLogger.start(
+                world, player, npc, brain,
+                tag=tag, seed=trial,
+                extra_meta={
+                    "condition_name": condition.name,
+                    "knowledge_mode": condition.knowledge_mode,
+                    "response_mode": condition.response_mode,
+                    "competing": condition.competing,
+                    "selective_attention": condition.selective_attention,
+                    "memory_decay_ticks": condition.memory_decay_ticks,
+                    "trial": trial,
+                },
+            )
+
+            if condition.knowledge_mode == "embodied":
+                for _ in range(config.NPC_EXPLORATION_TICKS):
+                    brain.tick()
+                    logger.log_tick(world, player, npc, brain)
+
+            npc_knowledge = brain.state.to_llm_context().copy()
+            target_label = f"{world.target_color}_{world.target_shape}"
+            target_location = self._find_target_location(world, target_label)
+            interaction_manager = InteractionManager(
+                api=PygameGameAPI.from_game(world, player, brain),
+                enforce_grounding=False,
+            )
+
             question = self._create_natural_question(world.target_color, world.target_shape)
             interaction_id = logger.log_interaction_pre(
                 world, player, npc, brain, world.target_color, world.target_shape
@@ -90,8 +147,7 @@ class ExperimentRunner:
                 question, response_text,
             )
         finally:
-            config.NPC_RESPONSE_MODE = original_mode
-            config.NPC_KNOWLEDGE_MODE = original_knowledge_mode
+            saved.restore()
 
         metrics_dict = self._evaluate_response(
             response_text, brain, world, target_label, target_location,
@@ -130,15 +186,32 @@ class ExperimentRunner:
             'target_was_observed': brain.state.seen_label(target_label),
             'knowledge_mode': condition.knowledge_mode,
             'response_mode': condition.response_mode,
+            'competing': condition.competing,
+            'selective_attention': condition.selective_attention,
+            'memory_decay_ticks': condition.memory_decay_ticks,
             'run_id': logger.run_id,
             **metrics_dict
         }
 
-    def _init_trial(self, seed: int, knowledge_mode: str):
+    def _init_trial(
+        self,
+        seed: int,
+        knowledge_mode: str,
+        condition: ExperimentCondition | None = None,
+    ):
         world = GameWorld(target_color="red", target_shape="triangle", seed=seed)
         player = Player(*config.PLAYER_START, sight_range=config.PLAYER_SIGHT_RANGE)
         npc = NPC(*config.NPC_START, sight_range=config.NPC_SIGHT_RANGE)
-        brain = NPCBrainGoalDriven(npc, world, goal_label="blue_circle")
+
+        # Competitive mode: NPC chases the same item the player is looking for,
+        # so its observation path is biased toward the target. The sharing
+        # policy in interaction.py separately handles withholding.
+        if condition and condition.competing:
+            goal_label = f"{world.target_color}_{world.target_shape}"
+        else:
+            goal_label = "blue_circle"
+        brain = NPCBrainGoalDriven(npc, world, goal_label=goal_label)
+
         if knowledge_mode == "perfect":
             self._give_perfect_knowledge(brain, world)
         return world, player, npc, brain
@@ -248,6 +321,25 @@ CORE_CONDITIONS = [
     ExperimentCondition("Embodied + Deterministic", "embodied", "deterministic"),
     ExperimentCondition("Embodied + LLM", "embodied", "llm"),
     ExperimentCondition("Embodied + SLM", "embodied", "slm"),
+]
+
+
+# Extended modalities — LLM-only by design. Each modality changes either what
+# the NPC knows when asked or what it chooses to reveal; running deterministic
+# responses across them would be lookup-table variants and miss the point.
+EXTENDED_CONDITIONS = [
+    ExperimentCondition(
+        "Embodied + LLM + Competitive", "embodied", "llm",
+        competing=True,
+    ),
+    ExperimentCondition(
+        "Embodied + LLM + MemoryDecay", "embodied", "llm",
+        memory_decay_ticks=20,
+    ),
+    ExperimentCondition(
+        "Embodied + LLM + SelectiveAttention", "embodied", "llm",
+        selective_attention="color",
+    ),
 ]
 
 

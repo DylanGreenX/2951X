@@ -365,9 +365,16 @@ class InteractionManager:
         user_prompt = messages[1]["content"]
         contents = [llm_client.user_content(user_prompt)]
         gemini_tools = llm_client.to_gemini_tools(tools)
+        # thinking_budget=0 disables Gemini's internal reasoning tokens, which
+        # otherwise share the max_output_tokens budget and regularly crowd out
+        # the NPC utterance — we observed 21% empty responses on 2.5-flash at
+        # 128 tokens before setting this. NPC dialogue is a persona task, not a
+        # reasoning task, so there is nothing to think about. Judge model has
+        # its own call path and picks its own budget (2.5-pro refuses 0).
         generation_config = {
             "temperature": getattr(config, "NPC_LLM_TEMPERATURE", 0.4),
             "max_output_tokens": getattr(config, "NPC_LLM_MAX_OUTPUT_TOKENS", 128),
+            "thinking_config": {"thinking_budget": 0},
         }
         max_tool_turns = getattr(config, "NPC_LLM_MAX_TOOL_TURNS", 4)
         self._log_llm_event(

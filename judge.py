@@ -171,6 +171,12 @@ def classify(
     user_message = "Evaluate:\n" + json.dumps(payload, indent=2)
 
     try:
+        # Let the judge model pick its own thinking budget — Gemini 2.5 Pro
+        # rejects thinking_budget=0 ("this model only works in thinking mode")
+        # and 2.5 Flash budgets internal reasoning against output tokens but
+        # we provision 1024 which is enough headroom for both. We used to
+        # force thinking_budget=0 here for 2.5-flash judging; that setting
+        # is provider-specific and not worth the portability cost.
         raw = client.generate_content(
             contents=user_message,
             system_instruction=RUBRIC,
@@ -178,11 +184,7 @@ def classify(
                 "temperature": 0.0,
                 "response_mime_type": "application/json",
                 "response_schema": SCHEMA,
-                "max_output_tokens": 1024,
-                # Gemini 2.5 Flash bills internal reasoning against the output
-                # budget and can truncate the JSON. Classification doesn't
-                # benefit from extended thinking — disable it.
-                "thinking_config": {"thinking_budget": 0},
+                "max_output_tokens": 2048,
             },
         )
     except LLMClientError as exc:
