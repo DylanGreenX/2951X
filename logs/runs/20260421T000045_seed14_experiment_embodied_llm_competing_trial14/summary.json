@@ -1,0 +1,17 @@
+{
+  "run_id": "20260421T000045_seed14_experiment_embodied_llm_competing_trial14",
+  "tag": "experiment_embodied_llm_competing_trial14",
+  "outcome": "experiment_complete",
+  "tick_count": 40,
+  "interaction_count": 1,
+  "duration_seconds": 16.294791,
+  "started_at": "2026-04-21T00:00:45.307939+00:00",
+  "ended_at": "2026-04-21T00:01:01.602730+00:00",
+  "stats": {
+    "npc_steps": 40,
+    "npc_coverage": 0.3689,
+    "target_was_observed": false,
+    "outcome_bucket": "hallucination",
+    "response_time_ms": 2463.606700010132
+  }
+}

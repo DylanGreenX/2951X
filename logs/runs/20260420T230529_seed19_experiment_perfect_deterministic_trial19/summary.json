@@ -1,0 +1,17 @@
+{
+  "run_id": "20260420T230529_seed19_experiment_perfect_deterministic_trial19",
+  "tag": "experiment_perfect_deterministic_trial19",
+  "outcome": "experiment_complete",
+  "tick_count": 0,
+  "interaction_count": 1,
+  "duration_seconds": 1.308104,
+  "started_at": "2026-04-20T23:05:29.496247+00:00",
+  "ended_at": "2026-04-20T23:05:30.804351+00:00",
+  "stats": {
+    "npc_steps": 0,
+    "npc_coverage": 1.0,
+    "target_was_observed": true,
+    "outcome_bucket": "correct",
+    "response_time_ms": 0.052300019888207316
+  }
+}

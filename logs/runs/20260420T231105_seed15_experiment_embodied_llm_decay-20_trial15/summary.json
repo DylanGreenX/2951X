@@ -1,0 +1,17 @@
+{
+  "run_id": "20260420T231105_seed15_experiment_embodied_llm_decay-20_trial15",
+  "tag": "experiment_embodied_llm_decay-20_trial15",
+  "outcome": "experiment_complete",
+  "tick_count": 40,
+  "interaction_count": 1,
+  "duration_seconds": 3.777272,
+  "started_at": "2026-04-20T23:11:05.293464+00:00",
+  "ended_at": "2026-04-20T23:11:09.070736+00:00",
+  "stats": {
+    "npc_steps": 40,
+    "npc_coverage": 0.3333,
+    "target_was_observed": false,
+    "outcome_bucket": "correct_abstention",
+    "response_time_ms": 2694.1396000038367
+  }
+}
