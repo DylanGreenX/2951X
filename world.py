@@ -6,14 +6,19 @@ from entities import Player
 
 
 class GameWorld:
-    def __init__(self, target_color: str, target_shape: str, seed=None):
-        if seed is not None:
-            random.seed(seed)
-
+    def __init__(
+        self,
+        target_color: str,
+        target_shape: str,
+        player_start: tuple[int, int] | None = None,
+        npc_start: tuple[int, int] | None = None,
+    ):
         self.size = config.GRID_SIZE
         self.shapes: list[Shape] = []
         self.target_color = target_color
         self.target_shape = target_shape
+        self._player_start = player_start or config.PLAYER_START
+        self._npc_start = npc_start or config.NPC_START
         self._generate(target_color, target_shape)
 
     def _generate(self, target_color: str, target_shape: str):
@@ -21,25 +26,28 @@ class GameWorld:
         occupied = set()
 
         # Reserve NPC and player starts
-        occupied.add(config.NPC_START)
-        occupied.add(config.PLAYER_START)
+        occupied.add(self._npc_start)
+        occupied.add(self._player_start)
 
-        # Add 1 target color, shape pair
-        pos = self._random_free_pos(occupied)
-        occupied.add(pos)
-        self.shapes.append(Shape(target_color, target_shape, pos[0], pos[1]))
-
-        shape_specs = (
-            [
-                (color, shape)
-                for color in config.COLORS
-                for shape in config.SHAPES
-                if not (color == target_color and shape == target_shape)
-            ]
-        )
+        shape_specs = [(target_color, target_shape)]
+        shape_specs += [
+            (color, shape)
+            for color in config.COLORS
+            for shape in config.SHAPES
+            if not (color == target_color and shape == target_shape)
+        ]
 
         for color, shape_type in shape_specs:
-            pos = self._random_free_pos(occupied)
+            label = f"{color}_{shape_type}"
+            
+            # Use fixed position if RANDOM_SPAWN is False and label exists in config
+            if not config.RANDOM_SPAWN and label in config.FIXED_SHAPE_POSITIONS:
+                pos = config.FIXED_SHAPE_POSITIONS[label]
+                if pos in occupied:
+                    pos = self._random_free_pos(occupied)
+            else:
+                pos = self._random_free_pos(occupied)
+
             occupied.add(pos)
             self.shapes.append(Shape(color, shape_type, pos[0], pos[1]))
 

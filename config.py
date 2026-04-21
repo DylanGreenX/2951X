@@ -12,6 +12,24 @@ COLORS = ["blue", "green", "purple", "red", "yellow"]
 SHAPES = ["circle", "triangle", "square"]
 NUM_OBJECTS = 15
 
+FIXED_SHAPE_POSITIONS = {
+    "red_triangle": (5, 5),
+    "blue_circle": (2, 8),
+    "green_square": (12, 3),
+    "yellow_circle": (7, 12),
+    "purple_triangle": (10, 10),
+    "blue_square": (1, 14),
+    "red_circle": (14, 1),
+    "green_circle": (4, 2),
+    "purple_circle": (8, 4),
+    "yellow_square": (3, 11),
+    "blue_triangle": (11, 6),
+    "green_triangle": (6, 9),
+    "purple_square": (9, 2),
+    "yellow_triangle": (2, 2),
+    "red_square": (13, 12)
+}
+
 # Skyrim vocabulary — maps internal labels to natural language for LLM prompts
 NATURAL_COLORS = {
     "red": "crimson",
@@ -56,11 +74,11 @@ SHAPE_ASSETS = {
 for x in range(15):
     for y in range(15):
         # --- TOWN REGION (Top Left) ---
-        if x < 5 and y < 6:
-            if x < 3 and y < 3:
-                loc = "the tavern square"
-            elif x >= 3 and y < 3:
-                loc = "near the north gate"
+        if x < 7 and y < 9:
+            if x > 5 or y > 6:
+                loc = "the city walls"
+            elif y > 6:
+                loc = "near the main gate"
             else:
                 loc = "the merchant quarter"
         
@@ -141,6 +159,7 @@ NPC_COMPETING = False
 
 # Player
 PLAYER_START = (13, 13)
+RANDOM_SPAWN = False   # when False, NPC_START and PLAYER_START are used as-is
 PLAYER_SIGHT_RANGE = 2
 
 # Target

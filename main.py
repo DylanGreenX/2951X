@@ -55,7 +55,17 @@ def _resolve_npc_goal(target_color: str, target_shape: str) -> str | None:
     return random.choice(choices)
 
 
-def _init_game(seed=None):
+def _resolve_start_positions() -> tuple[tuple[int, int], tuple[int, int]]:
+    """Return (player_start, npc_start) — random or from config depending on RANDOM_SPAWN."""
+    if config.RANDOM_SPAWN:
+        all_cells = [(x, y) for x in range(config.GRID_SIZE) for y in range(config.GRID_SIZE)]
+        player_start = random.choice(all_cells)
+        npc_start = random.choice([c for c in all_cells if c != player_start])
+        return player_start, npc_start
+    return config.PLAYER_START, config.NPC_START
+
+
+def _init_game():
     """Create a fresh world, player, NPC, and brain. Returns (world, player, npc, brain)."""
     if config.DETERMINISTIC_TARGET:
         target_color, target_shape = config.TARGET_COLOR, config.TARGET_SHAPE
@@ -63,12 +73,19 @@ def _init_game(seed=None):
         target_color = random.choice(config.COLORS)
         target_shape = random.choice(config.SHAPES)
 
-    world = GameWorld(target_color=target_color, target_shape=target_shape, seed=seed)
+    player_start, npc_start = _resolve_start_positions()
 
-    player = Player(*config.PLAYER_START, sight_range=config.PLAYER_SIGHT_RANGE)
+    world = GameWorld(
+        target_color=target_color,
+        target_shape=target_shape,
+        player_start=player_start,
+        npc_start=npc_start,
+    )
+
+    player = Player(*player_start, sight_range=config.PLAYER_SIGHT_RANGE)
     world.update_player_vision(player)  # populate initial sight cone immediately
 
-    npc = NPC(*config.NPC_START, sight_range=config.NPC_SIGHT_RANGE)
+    npc = NPC(*npc_start, sight_range=config.NPC_SIGHT_RANGE)
 
     goal_label = _resolve_npc_goal(target_color, target_shape)
     if goal_label is None:
@@ -128,7 +145,7 @@ def main():
     font_big = pygame.font.SysFont("consolas", 18, bold=True)
     font_title = pygame.font.SysFont("consolas", 14, bold=True)
 
-    world, player, npc, brain, interaction_manager = _init_game(seed=42)
+    world, player, npc, brain, interaction_manager = _init_game()
 
     # Event log (notable things that happened)
     event_log: list[str] = []
