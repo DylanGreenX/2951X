@@ -18,8 +18,9 @@ import config
 from world import GameWorld
 from entities import Player, NPC
 from npc_brain import NPCBrainGoalDriven, NPCBrainWandering
-from interaction import InteractionManager, reset_llm_log
+from interaction import InteractionManager
 from pygame_game_api import PygameGameAPI
+from game_log import GameLogger
 
 
 # ── Color palette for shapes ──────────────────────────────────
@@ -55,8 +56,16 @@ def _resolve_npc_goal(target_color: str, target_shape: str) -> str | None:
     return random.choice(choices)
 
 
-def _init_game(seed=None):
-    """Create a fresh world, player, NPC, and brain. Returns (world, player, npc, brain)."""
+def _init_game(seed=None, prev_logger: GameLogger | None = None):
+    """Create a fresh world, player, NPC, brain, interaction manager, and game logger.
+
+    If ``prev_logger`` is passed (e.g. on reset), it is ended first so its
+    summary.json is written and ``config.NPC_LLM_LOG_PATH`` is restored
+    before we start a new run.
+    """
+    if prev_logger is not None:
+        prev_logger.end(outcome="reset")
+
     if config.DETERMINISTIC_TARGET:
         target_color, target_shape = config.TARGET_COLOR, config.TARGET_SHAPE
     else:
@@ -66,7 +75,7 @@ def _init_game(seed=None):
     world = GameWorld(target_color=target_color, target_shape=target_shape, seed=seed)
 
     player = Player(*config.PLAYER_START, sight_range=config.PLAYER_SIGHT_RANGE)
-    world.update_player_vision(player)  # populate initial sight cone immediately
+    world.update_player_vision(player)
 
     npc = NPC(*config.NPC_START, sight_range=config.NPC_SIGHT_RANGE)
 
@@ -78,11 +87,44 @@ def _init_game(seed=None):
 
     interaction_manager = InteractionManager(api=PygameGameAPI.from_game(world, player, brain))
 
-    return world, player, npc, brain, interaction_manager
+    # Start the run log. GameLogger retargets config.NPC_LLM_LOG_PATH so all
+    # LLM events auto-flow into the per-run game.jsonl for auditing.
+    logger = GameLogger.start(world, player, npc, brain, tag="play", seed=seed)
+
+    return world, player, npc, brain, interaction_manager, logger
+
+
+def _load_map_assets(grid_px: int) -> dict:
+    """Load bg + shape + entity sprites once. Missing files silently fall
+    back to None so the old colored-polygon draw path stays available."""
+    assets: dict = {"bg": None, "shapes": {}, "npc": None, "player": None}
+
+    try:
+        bg = pygame.image.load(config.BG_IMAGE_PATH).convert()
+        assets["bg"] = pygame.transform.scale(bg, (grid_px, grid_px))
+    except (pygame.error, FileNotFoundError, AttributeError):
+        pass
+
+    sprite_px = int(config.CELL_PX * 0.75)
+    for label, path in getattr(config, "SHAPE_ASSETS", {}).items():
+        try:
+            img = pygame.image.load(path).convert_alpha()
+            assets["shapes"][label] = pygame.transform.scale(img, (sprite_px, sprite_px))
+        except (pygame.error, FileNotFoundError):
+            assets["shapes"][label] = None
+
+    entity_px = int(config.CELL_PX)
+    for key, path in (("npc", "images/npc.png"), ("player", "images/player.png")):
+        try:
+            img = pygame.image.load(path).convert_alpha()
+            assets[key] = pygame.transform.scale(img, (entity_px, entity_px))
+        except (pygame.error, FileNotFoundError):
+            pass
+
+    return assets
 
 
 def main():
-    reset_llm_log()
     pygame.init()
 
     grid_px = config.GRID_SIZE * config.CELL_PX
@@ -96,7 +138,9 @@ def main():
     font_big = pygame.font.SysFont("consolas", 18, bold=True)
     font_title = pygame.font.SysFont("consolas", 14, bold=True)
 
-    world, player, npc, brain, interaction_manager = _init_game(seed=42)
+    assets = _load_map_assets(grid_px)
+
+    world, player, npc, brain, interaction_manager, logger = _init_game(seed=42)
 
     # Event log (notable things that happened)
     event_log: list[str] = []
@@ -108,6 +152,7 @@ def main():
 
     last_npc_tick = pygame.time.get_ticks()
     running = True
+    outcome = "quit"
 
     while running:
         now = pygame.time.get_ticks()
@@ -118,17 +163,19 @@ def main():
                 running = False
             elif event.type == pygame.KEYDOWN:
                 if in_interaction:
-                    # ESC or ENTER dismisses the dialogue and resumes the game
                     if event.key in (pygame.K_ESCAPE, pygame.K_RETURN):
                         in_interaction = False
                 else:
                     if event.key == pygame.K_ESCAPE:
                         running = False
+                    elif event.key == pygame.K_p:
+                        brain.set_target_pos((player.x,player.y))
                     elif event.key == pygame.K_r:
-                        world, player, npc, brain, interaction_manager = _init_game()
+                        world, player, npc, brain, interaction_manager, logger = (
+                            _init_game(prev_logger=logger)
+                        )
                         event_log.clear()
                         in_interaction = False
-                    # Player movement
                     dx, dy = 0, 0
                     if event.key == pygame.K_UP:
                         dy = -1
@@ -142,14 +189,24 @@ def main():
                     if world.in_bounds(nx, ny):
                         player.x, player.y = nx, ny
                         world.update_player_vision(player)
+                        logger.log_tick(world, player, npc, brain)
                         # Auto-trigger interaction when player steps onto NPC
                         if interaction_manager.can_interact(player, npc):
+                            interaction_id = logger.log_interaction_pre(
+                                world, player, npc, brain,
+                                world.target_color, world.target_shape,
+                            )
                             interaction_question, interaction_response = (
                                 interaction_manager.start_interaction(
                                     brain,
                                     world.target_color,
                                     world.target_shape,
                                 )
+                            )
+                            logger.log_interaction_summary(
+                                interaction_id, interaction_manager, brain, world,
+                                world.target_color, world.target_shape,
+                                interaction_question, interaction_response,
                             )
                             in_interaction = True
 
@@ -160,12 +217,13 @@ def main():
                 event_log.append(result)
                 if len(event_log) > 8:
                     event_log.pop(0)
+            logger.log_tick(world, player, npc, brain, event_msg=result)
             last_npc_tick = now
 
         # ── Draw ──
         screen.fill(config.BG_COLOR)
         _draw_top_bar(screen, font_big, npc, brain, world)
-        _draw_grid(screen, world, brain, npc, player, font)
+        _draw_grid(screen, world, brain, npc, player, font, assets)
         _draw_sidebar(screen, font_title, font, brain, event_log, grid_px)
         _draw_hud(screen, font_title, font, brain, grid_px, win_w)
         if in_interaction:
@@ -176,6 +234,15 @@ def main():
         pygame.display.flip()
         clock.tick(config.FPS)
 
+    logger.end(
+        outcome=outcome,
+        extra_stats={
+            "npc_steps": npc.steps_taken,
+            "npc_coverage": round(brain.state.coverage, 4),
+            "player_pos": [player.x, player.y],
+            "npc_pos": [npc.x, npc.y],
+        },
+    )
     pygame.quit()
     sys.exit()
 
@@ -201,25 +268,117 @@ def _draw_top_bar(screen, font, npc, brain, world):
     screen.blit(surf, (12, 15))
 
 
-def _draw_grid(screen, world, brain, npc, player, font):
-    """Draw the grid, shapes, fog of war, NPC, and player."""
-    ox, oy = _grid_origin()
+def _draw_grid(screen, world, brain, npc, player, font, assets):
+    """Draw the painted map, shapes, fog of war, NPC, and player.
 
-    # Grid lines
+    Render order: bg → grid lines → shape sprites → entities → fog overlay.
+    Fog is applied last so it tints bg + sprites uniformly.
+    """
+    ox, oy = _grid_origin()
+    grid_px = config.GRID_SIZE * config.CELL_PX
+
+    # 1. Painted map (fallback: solid background fill is already on-screen)
+    if assets.get("bg") is not None:
+        screen.blit(assets["bg"], (ox, oy))
+
+    # 2. Grid lines on top of map for cell readability
     for i in range(config.GRID_SIZE + 1):
         px = ox + i * config.CELL_PX
-        pygame.draw.line(screen, config.GRID_LINE_COLOR, (px, oy), (px, oy + config.GRID_SIZE * config.CELL_PX))
+        pygame.draw.line(screen, config.GRID_LINE_COLOR, (px, oy), (px, oy + grid_px))
         py = oy + i * config.CELL_PX
-        pygame.draw.line(screen, config.GRID_LINE_COLOR, (ox, py), (ox + config.GRID_SIZE * config.CELL_PX, py))
+        pygame.draw.line(screen, config.GRID_LINE_COLOR, (ox, py), (ox + grid_px, py))
 
-    # Fog of war + seen tint
+    # 3. Shape sprites (or polygon fallback) for anything the player has seen
+    shape_sprites = assets.get("shapes", {})
+    for shape in world.shapes:
+        if shape.collected:
+            continue
+        visible = (
+            (config.PLAY_MODE and (shape.x, shape.y) in player.observed_cells)
+            or not config.PLAY_MODE
+            or (config.NPC_OBSERVED_CELLS_VISIBLE and (shape.x, shape.y) in brain.state.observed_cells)
+        )
+        if not visible:
+            continue
+
+        label = f"{shape.color}_{shape.shape_type}"
+        sprite = shape_sprites.get(label)
+        if sprite is not None:
+            ix = ox + shape.x * config.CELL_PX + (config.CELL_PX - sprite.get_width()) // 2
+            iy = oy + shape.y * config.CELL_PX + (config.CELL_PX - sprite.get_height()) // 2
+            screen.blit(sprite, (ix, iy))
+        else:
+            px = ox + shape.x * config.CELL_PX + config.CELL_PX // 2
+            py = oy + shape.y * config.CELL_PX + config.CELL_PX // 2
+            color = SHAPE_COLORS[shape.color]
+            r = config.CELL_PX // 3
+            if shape.shape_type == "circle":
+                pygame.draw.circle(screen, color, (px, py), r)
+                pygame.draw.circle(screen, (255, 255, 255), (px, py), r, 2)
+            elif shape.shape_type == "triangle":
+                pts = [(px, py - r), (px - r, py + r), (px + r, py + r)]
+                pygame.draw.polygon(screen, color, pts)
+                pygame.draw.polygon(screen, (255, 255, 255), pts, 2)
+            elif shape.shape_type == "square":
+                rect = pygame.Rect(px - r, py - r, r * 2, r * 2)
+                pygame.draw.rect(screen, color, rect)
+                pygame.draw.rect(screen, (255, 255, 255), rect, 2)
+
+    # 4. NPC
+    npc_visible = (npc.x, npc.y) in player.observed_cells or not config.PLAY_MODE
+    if npc_visible:
+        npc_img = assets.get("npc")
+        if npc_img is not None:
+            ix = ox + npc.x * config.CELL_PX + (config.CELL_PX - npc_img.get_width()) // 2
+            iy = oy + npc.y * config.CELL_PX + (config.CELL_PX - npc_img.get_height()) // 2
+            screen.blit(npc_img, (ix, iy))
+        else:
+            npx = ox + npc.x * config.CELL_PX + config.CELL_PX // 2
+            npy = oy + npc.y * config.CELL_PX + config.CELL_PX // 2
+            d = config.CELL_PX // 3
+            pts = [(npx, npy - d), (npx + d, npy), (npx, npy + d), (npx - d, npy)]
+            pygame.draw.polygon(screen, config.NPC_COLOR, pts)
+            pygame.draw.polygon(screen, (255, 255, 255), pts, 2)
+            label = font.render("NPC", True, config.NPC_COLOR)
+            screen.blit(label, (npx - label.get_width() // 2, npy - d - 14))
+
+    # 5. Player
+    player_img = assets.get("player")
+    if player_img is not None:
+        ix = ox + player.x * config.CELL_PX + (config.CELL_PX - player_img.get_width()) // 2
+        iy = oy + player.y * config.CELL_PX + (config.CELL_PX - player_img.get_height()) // 2
+        screen.blit(player_img, (ix, iy))
+    else:
+        ppx = ox + player.x * config.CELL_PX + config.CELL_PX // 2
+        ppy = oy + player.y * config.CELL_PX + config.CELL_PX // 2
+        pr = config.CELL_PX // 3
+        prect = pygame.Rect(ppx - pr, ppy - pr, pr * 2, pr * 2)
+        pygame.draw.rect(screen, config.PLAYER_COLOR, prect)
+        pygame.draw.rect(screen, (100, 100, 100), prect, 2)
+        pygame.draw.line(screen, (0, 0, 0), (ppx - pr // 2, ppy), (ppx + pr // 2, ppy), 2)
+        pygame.draw.line(screen, (0, 0, 0), (ppx, ppy - pr // 2), (ppx, ppy + pr // 2), 2)
+        label = font.render("YOU", True, config.PLAYER_COLOR)
+        screen.blit(label, (ppx - label.get_width() // 2, ppy - pr - 14))
+
+    # 6. Fog overlay — applied last so bg + sprites both get tinted uniformly.
+    # Cells in the player's current sight cone render crisp (no overlay);
+    # previously-observed cells get a subtle memory tint; the rest is fog.
     fog_surf = pygame.Surface((config.CELL_PX, config.CELL_PX), pygame.SRCALPHA)
     fog_surf.fill(config.FOG_COLOR)
     seen_surf = pygame.Surface((config.CELL_PX, config.CELL_PX), pygame.SRCALPHA)
     seen_surf.fill(config.SEEN_TINT)
 
+    sr = player.sight_range
+    spotlight = {
+        (player.x + dx, player.y + dy)
+        for dx in range(-sr, sr + 1)
+        for dy in range(-sr, sr + 1)
+    }
+
     for gx in range(config.GRID_SIZE):
         for gy in range(config.GRID_SIZE):
+            if (gx, gy) in spotlight:
+                continue
             px = ox + gx * config.CELL_PX
             py = oy + gy * config.CELL_PX
             if (gx, gy) in player.observed_cells:
@@ -229,7 +388,7 @@ def _draw_grid(screen, world, brain, npc, player, font):
             else:
                 screen.blit(fog_surf, (px, py))
 
-    # NPC sight range highlight
+    # NPC sight range highlight (debug only)
     if config.NPC_OBSERVED_CELLS_VISIBLE or not config.PLAY_MODE:
         sr = npc.sight_range
         sight_surf = pygame.Surface((config.CELL_PX, config.CELL_PX), pygame.SRCALPHA)
@@ -238,70 +397,7 @@ def _draw_grid(screen, world, brain, npc, player, font):
             for dy in range(-sr, sr + 1):
                 gx, gy = npc.x + dx, npc.y + dy
                 if 0 <= gx < config.GRID_SIZE and 0 <= gy < config.GRID_SIZE:
-                    px = ox + gx * config.CELL_PX
-                    py = oy + gy * config.CELL_PX
-                    screen.blit(sight_surf, (px, py))
-    
-    # Player sight range highlight
-    sr = player.sight_range
-    sight_surf = pygame.Surface((config.CELL_PX, config.CELL_PX), pygame.SRCALPHA)
-    sight_surf.fill((200, 220, 255, 100))
-    for dx in range(-sr, sr + 1):
-        for dy in range(-sr, sr + 1):
-            gx, gy = player.x + dx, player.y + dy
-            if 0 <= gx < config.GRID_SIZE and 0 <= gy < config.GRID_SIZE:
-                px = ox + gx * config.CELL_PX
-                py = oy + gy * config.CELL_PX
-                screen.blit(sight_surf, (px, py))
-
-    # Shapes
-    for shape in world.shapes:
-        if shape.collected:
-            continue
-        px = ox + shape.x * config.CELL_PX + config.CELL_PX // 2
-        py = oy + shape.y * config.CELL_PX + config.CELL_PX // 2
-        color = SHAPE_COLORS[shape.color]
-        r = config.CELL_PX // 3
-        if (config.PLAY_MODE and (shape.x, shape.y) in player.observed_cells) or not config.PLAY_MODE or (config.NPC_OBSERVED_CELLS_VISIBLE and (shape.x, shape.y) in brain.state.observed_cells):
-            if shape.shape_type == "circle":
-                pygame.draw.circle(screen, color, (px, py), r)
-                pygame.draw.circle(screen, (255, 255, 255), (px, py), r, 2)
-            elif shape.shape_type == "triangle":
-                pts = [
-                    (px, py - r),
-                    (px - r, py + r),
-                    (px + r, py + r),
-                ]
-                pygame.draw.polygon(screen, color, pts)
-                pygame.draw.polygon(screen, (255, 255, 255), pts, 2)
-            elif shape.shape_type == "square":
-                rect = pygame.Rect(px - r, py - r, r * 2, r * 2)
-                pygame.draw.rect(screen, color, rect)
-                pygame.draw.rect(screen, (255, 255, 255), rect, 2)
-
-    # NPC — diamond shape
-    npx = ox + npc.x * config.CELL_PX + config.CELL_PX // 2
-    npy = oy + npc.y * config.CELL_PX + config.CELL_PX // 2
-    d = config.CELL_PX // 3
-    npc_pts = [(npx, npy - d), (npx + d, npy), (npx, npy + d), (npx - d, npy)]
-    pygame.draw.polygon(screen, config.NPC_COLOR, npc_pts)
-    pygame.draw.polygon(screen, (255, 255, 255), npc_pts, 2)
-    # Label
-    label = font.render("NPC", True, config.NPC_COLOR)
-    screen.blit(label, (npx - label.get_width() // 2, npy - d - 14))
-
-    # Player — filled square with cross
-    ppx = ox + player.x * config.CELL_PX + config.CELL_PX // 2
-    ppy = oy + player.y * config.CELL_PX + config.CELL_PX // 2
-    pr = config.CELL_PX // 3
-    prect = pygame.Rect(ppx - pr, ppy - pr, pr * 2, pr * 2)
-    pygame.draw.rect(screen, config.PLAYER_COLOR, prect)
-    pygame.draw.rect(screen, (100, 100, 100), prect, 2)
-    # Cross marker
-    pygame.draw.line(screen, (0, 0, 0), (ppx - pr//2, ppy), (ppx + pr//2, ppy), 2)
-    pygame.draw.line(screen, (0, 0, 0), (ppx, ppy - pr//2), (ppx, ppy + pr//2), 2)
-    label = font.render("YOU", True, config.PLAYER_COLOR)
-    screen.blit(label, (ppx - label.get_width() // 2, ppy - pr - 14))
+                    screen.blit(sight_surf, (ox + gx * config.CELL_PX, oy + gy * config.CELL_PX))
 
 
 def _draw_sidebar(screen, font_title, font, brain, event_log, grid_px):

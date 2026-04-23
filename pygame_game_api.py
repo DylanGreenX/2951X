@@ -39,7 +39,9 @@ from game_api_interface import (
     ObjectDict,
     PlayerStateDict,
     PositionDict,
+    SetNPCTargetDict,
     WorldInfoDict,
+    get_natural_position_name,
 )
 from npc_brain import NPCBrain
 from rlang_engine import get_natural_object_name
@@ -96,13 +98,17 @@ class PygameGameAPI(GameAPIProvider):
             )
         return self.brains[npc_id]
 
-    @staticmethod
-    def _to_object_dict(shape) -> ObjectDict:
-        """Convert a Shape entity to a JSON-safe ObjectDict."""
+    def _to_object_dict(self, shape) -> ObjectDict:
+        """Convert a Shape entity into the LLM-facing ObjectDict.
+
+        Internal composite labels ('red_triangle') are never exposed — the LLM
+        only ever sees the Skyrim natural name and the structural position /
+        region fields it needs for action dispatch.
+        """
         return {
-            "label": shape.label,
-            "natural_name": get_natural_object_name(shape.label),
+            "name": get_natural_object_name(shape.label),
             "position": {"x": shape.x, "y": shape.y},
+            "region": get_natural_position_name(shape.x, shape.y, self.world.size),
             "collected": shape.collected,
         }
 
@@ -118,15 +124,14 @@ class PygameGameAPI(GameAPIProvider):
         target_label = f"{self.world.target_color}_{self.world.target_shape}"
         return {
             "size": self.world.size,
-            "target_label": target_label,
-            "target_natural_name": get_natural_object_name(target_label),
+            "target_name": get_natural_object_name(target_label),
         }
 
     def get_npc_state(self, npc_id: str) -> NPCStateDict:
         """
         Return position, goal, step count, and sight range for the given NPC.
 
-        goal_label / goal_natural_name are None for wandering (baseline) NPCs.
+        goal_name is None for wandering (baseline) NPCs.
         """
         brain = self._get_brain(npc_id)
         npc = brain.npc
@@ -134,10 +139,10 @@ class PygameGameAPI(GameAPIProvider):
         return {
             "npc_id": npc_id,
             "position": {"x": npc.x, "y": npc.y},
+            "region": get_natural_position_name(npc.x, npc.y, self.world.size),
             "sight_range": npc.sight_range,
             "steps_taken": npc.steps_taken,
-            "goal_label": goal_label,
-            "goal_natural_name": (
+            "goal_name": (
                 get_natural_object_name(goal_label) if goal_label else None
             ),
         }
@@ -170,40 +175,40 @@ class PygameGameAPI(GameAPIProvider):
     def get_npc_memory(
         self,
         npc_id: str,
-        filter_label: Optional[str] = None,
+        filter_name: Optional[str] = None,
     ) -> NPCMemoryDict:
         """
-        Return the NPC's embodied observation log.
+        Return the NPC's embodied observation log keyed by Skyrim natural name.
 
-        If filter_label is given (e.g. "red_triangle") only entries for that
-        label are included. If the NPC has never seen that object the returned
-        shape_locations dict will be empty — do not fall back to full world state.
+        If filter_name is given (e.g. "crimson flag") only entries whose
+        natural name matches are included. If the NPC has never seen that
+        object, the returned observations dict will be empty — never fall
+        back to full world state.
 
-        context_lines is the same list that to_llm_context() produces and can
-        be injected directly into an LLM system or user message.
+        context_lines is the list to_llm_context() produces — inject into an
+        LLM system or user message directly.
         """
         brain = self._get_brain(npc_id)
         state = brain.state
 
-        # Filter or use the full observed map
-        if filter_label is not None:
-            raw: dict[str, list[tuple[int, int]]] = (
-                {filter_label: state.shape_locations[filter_label]}
-                if filter_label in state.shape_locations
-                else {}
+        # Re-key by natural name so internal composite labels never leak to
+        # the LLM surface. Two different internal labels that happen to
+        # resolve to the same natural name (rare given NATURAL_OBJECTS
+        # overrides) get merged, which is fine — they are the same item as
+        # far as the LLM is concerned.
+        by_name: dict[str, list[PositionDict]] = {}
+        for label, positions in state.shape_locations.items():
+            natural = get_natural_object_name(label)
+            if filter_name is not None and natural.lower() != filter_name.lower():
+                continue
+            by_name.setdefault(natural, []).extend(
+                {"x": x, "y": y} for x, y in positions
             )
-        else:
-            raw = dict(state.shape_locations)
-
-        shape_locations: dict[str, list[PositionDict]] = {
-            label: [{"x": x, "y": y} for x, y in positions]
-            for label, positions in raw.items()
-        }
 
         return {
             "npc_id": npc_id,
             "coverage": state.coverage,
-            "shape_locations": shape_locations,
+            "observations": by_name,
             "context_lines": state.to_llm_context(),
         }
 
@@ -247,5 +252,44 @@ class PygameGameAPI(GameAPIProvider):
                 for s in self.world.shapes
                 if not s.collected
             ]
+        }
+
+    def set_npc_target(self, npc_id: str, x: int, y: int) -> SetNPCTargetDict:
+        """
+        Command the NPC to navigate to (x, y) one step at a time.
+
+        Validates that the npc_id exists and the coordinates are within the
+        world bounds before calling set_target_pos on the brain. Returns
+        success=False with a descriptive message if either check fails.
+        """
+        if npc_id not in self.brains:
+            return {
+                "npc_id": npc_id,
+                "target_position": {"x": x, "y": y},
+                "success": False,
+                "message": (
+                    f"Unknown npc_id {npc_id!r}. "
+                    f"Registered IDs: {list(self.brains)}"
+                ),
+            }
+
+        if not self.world.in_bounds(x, y):
+            return {
+                "npc_id": npc_id,
+                "target_position": {"x": x, "y": y},
+                "success": False,
+                "message": (
+                    f"Target ({x}, {y}) is out of bounds. "
+                    f"World size is {self.world.size}x{self.world.size} "
+                    f"(valid range: 0 to {self.world.size - 1})."
+                ),
+            }
+
+        self.brains[npc_id].set_target_pos((x, y))
+        return {
+            "npc_id": npc_id,
+            "target_position": {"x": x, "y": y},
+            "success": True,
+            "message": f"NPC {npc_id!r} is now navigating to ({x}, {y}).",
         }
 

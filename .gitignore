@@ -1,14 +1,4 @@
-# venv
-/2951X
-/venv
-
-# .env
+/.venv
+/pycache
 .env
-
-# pycache
-__pycache__/
-*.py[cod]
-*$py.class
-
-# runtime logs
-llm_interactions.jsonl
+*.pyc

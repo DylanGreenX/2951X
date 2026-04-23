@@ -33,9 +33,12 @@ class PositionDict(TypedDict):
 
 
 class ObjectDict(TypedDict):
-    label: str          # internal key, e.g. "red_triangle"
-    natural_name: str   # Skyrim vocabulary name, e.g. "crimson flag"
+    """LLM-facing object record. Internal labels like 'red_triangle' never
+    appear here — the LLM reasons about items by their Skyrim natural name
+    (e.g. 'crimson flag') and acts on them by position."""
+    name: str           # Skyrim vocabulary name, e.g. "crimson flag"
     position: PositionDict
+    region: str         # natural region phrase, e.g. "the far southeast corner"
     collected: bool
 
 
@@ -44,18 +47,17 @@ class ObjectDict(TypedDict):
 class WorldInfoDict(TypedDict):
     """Static world metadata."""
     size: int                    # grid is size × size
-    target_label: str            # e.g. "red_triangle"
-    target_natural_name: str     # e.g. "crimson flag"
+    target_name: str             # Skyrim natural name, e.g. "crimson flag"
 
 
 class NPCStateDict(TypedDict):
     """Live state of a single NPC."""
     npc_id: str
     position: PositionDict
+    region: str                    # natural region phrase for position
     sight_range: int
     steps_taken: int
-    goal_label: Optional[str]         # None → wandering NPC
-    goal_natural_name: Optional[str]  # None → wandering NPC
+    goal_name: Optional[str]       # Skyrim natural name, None for wandering NPC
 
 
 class PlayerStateDict(TypedDict):
@@ -72,10 +74,12 @@ class NearbyObjectsDict(TypedDict):
 
 
 class NPCMemoryDict(TypedDict):
-    """Everything the NPC personally observed."""
+    """Everything the NPC personally observed. Keyed by Skyrim natural name
+    (e.g. 'crimson flag'), never by internal label — the LLM only ever sees
+    one identifier for each object."""
     npc_id: str
     coverage: float                              # fraction of world explored, 0.0–1.0
-    shape_locations: dict[str, list[PositionDict]]  # label → list of positions seen
+    observations: dict[str, list[PositionDict]]  # natural name → list of positions seen
     context_lines: list[str]                     # natural-language sentences for LLM injection
 
 
@@ -96,6 +100,14 @@ class ObjectAtDict(TypedDict):
 class AllObjectsDict(TypedDict):
     """Full world object list (perfect-knowledge mode only)."""
     objects: list[ObjectDict]
+
+
+class SetNPCTargetDict(TypedDict):
+    """Result of issuing a movement target to an NPC."""
+    npc_id: str
+    target_position: PositionDict
+    success: bool
+    message: str
 
 
 # ── Abstract base class ───────────────────────────────────────────────────────
@@ -149,15 +161,15 @@ class GameAPIProvider(ABC):
 
     @abstractmethod
     def get_npc_memory(
-        self, npc_id: str, filter_label: Optional[str] = None
+        self, npc_id: str, filter_name: Optional[str] = None
     ) -> NPCMemoryDict:
         """
         Return the NPC's personal observation log — only items the NPC has
         personally witnessed during its travels. Never returns the full game
         state; this is embodied knowledge only.
 
-        Pass filter_label (e.g. "red_triangle") to narrow results to a single
-        object type. Omit it to retrieve the complete observation history.
+        Pass filter_name (e.g. "crimson flag") to narrow results to one object
+        type by Skyrim natural name. Omit it to retrieve the full history.
         """
         ...
 
@@ -187,6 +199,18 @@ class GameAPIProvider(ABC):
         observations. This is *perfect-knowledge mode* — call only when
         running the omniscient NPC baseline condition. Never use this to
         generate embodied NPC responses.
+        """
+        ...
+
+    @abstractmethod
+    def set_npc_target(self, npc_id: str, x: int, y: int) -> SetNPCTargetDict:
+        """
+        Command the NPC to autonomously navigate to grid position (x, y).
+        The NPC will step one cell at a time toward the target each game tick
+        until it arrives, then resume its default behaviour. Use when you want
+        the NPC to physically move to a location — for example, to lead the
+        player to a known object, investigate a position, or reposition before
+        speaking again.
         """
         ...
 
@@ -287,11 +311,12 @@ GAME_TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "type": "string",
                         "description": "The NPC identifier.",
                     },
-                    "filter_label": {
+                    "filter_name": {
                         "type": "string",
                         "description": (
-                            "Optional. Restrict results to a single object type, "
-                            "e.g. 'red_triangle'. Omit to retrieve all observations."
+                            "Optional. Restrict results to a single object type "
+                            "by Skyrim name, e.g. 'crimson flag'. "
+                            "Omit to retrieve all observations."
                         ),
                     },
                 },
@@ -351,6 +376,39 @@ GAME_TOOL_SCHEMAS: list[dict[str, Any]] = [
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_npc_target",
+            "description": (
+                "Commands the NPC to autonomously navigate to a specific grid position. "
+                "The NPC will pathfind toward (x, y), moving one step per game tick, and "
+                "will resume its default behaviour once it arrives. "
+                "Use this to make the NPC physically move — for example, to lead the player "
+                "to a known object, investigate a location, or reposition itself before "
+                "continuing a conversation. Only call this when deliberate NPC movement is "
+                "appropriate; do not call it simply to report information."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "npc_id": {
+                        "type": "string",
+                        "description": "The NPC identifier, e.g. 'npc_0'.",
+                    },
+                    "x": {
+                        "type": "integer",
+                        "description": "Target grid X coordinate (0 to world_size - 1).",
+                    },
+                    "y": {
+                        "type": "integer",
+                        "description": "Target grid Y coordinate (0 to world_size - 1).",
+                    },
+                },
+                "required": ["npc_id", "x", "y"],
+            },
+        },
+    },
 ]
 
 
@@ -360,6 +418,7 @@ EMBODIED_TOOL_NAMES = {
     "get_player_state",
     "get_npc_memory",
     "get_exploration_status",
+    "set_npc_target",
 }
 
 
@@ -381,6 +440,75 @@ def get_tool_schemas_for_knowledge_mode(is_embodied: bool) -> list[dict[str, Any
 
 
 # ── Tool call dispatcher ───────────────────────────────────────────────────────
+
+def get_natural_position_name(x: int, y: int, world_size: int) -> str:
+    """
+    Convert a grid position into a lore-flavoured region name that matches the
+    visible map (images/bg.png): town in the northwest, windmill + pastures in
+    the northeast, a river running north-south through the middle, swamps to
+    the southwest, mountains + volcano + dragon's lair in the southeast, a
+    stone circle on the east flank, and a dark forest filling the rest.
+
+    Thresholds were hand-tuned on the 15×15 painted map. For other grid sizes
+    we rescale (x, y) back into the 15×15 frame before classifying so extraction
+    and scoring stay consistent with what the LLM sees in context.
+
+    Examples (on 15×15)
+    ────────────────────
+        get_natural_position_name(2, 2,  15)  → "the merchant quarter"
+        get_natural_position_name(7, 4,  15)  → "the river bridge"
+        get_natural_position_name(11, 2, 15)  → "the windmill fields"
+        get_natural_position_name(13, 13, 15) → "the dragon's lair"
+        get_natural_position_name(11, 11, 15) → "the volcanic crater"
+    """
+    # Rescale to the 15×15 frame the bg image was painted against.
+    scale = 15 / max(world_size, 1)
+    gx = x * scale
+    gy = y * scale
+
+    # TOWN (northwest quadrant, inside the walls)
+    if gx < 7 and gy < 9:
+        if gx > 5 or gy > 6:
+            return "the city walls"
+        return "the merchant quarter"
+
+    # WINDMILL + PASTURES (northeast)
+    if gx >= 10 and gy < 5:
+        if gx > 12:
+            return "the sheep pastures"
+        return "the windmill fields"
+
+    # RIVER (central vertical strip, north of the swamp)
+    if 6 <= gx <= 8 and gy < 11:
+        if 4 <= gy <= 5:
+            return "the river bridge"
+        return "the riverside"
+
+    # SWAMP (southwest)
+    if gx < 7 and gy >= 9:
+        if gy < 11:
+            return "the north swamp edge"
+        if gy > 13:
+            return "the south swamp edge"
+        return "the deep swamp"
+
+    # MOUNTAINS + VOLCANO + LAIR (southeast)
+    if gx >= 10 and gy >= 8:
+        if gx >= 13 and gy >= 13:
+            return "the dragon's lair"
+        if 10 <= gx <= 12 and 10 <= gy <= 12:
+            return "the volcanic crater"
+        return "the mountain peaks"
+
+    # STONE CIRCLE (east flank, between windmill and mountains)
+    if gx >= 9 and 5 <= gy <= 7:
+        return "the ancient stone circle"
+
+    # DARK FOREST — everything southish that isn't river/swamp/mountains
+    if gx < 10 and gy >= 6:
+        return "the dark forest"
+
+    return "the wilderness"
 
 def dispatch_tool_call(
     api: GameAPIProvider,
@@ -409,11 +537,16 @@ def dispatch_tool_call(
                                  ),
         "get_npc_memory":        lambda: api.get_npc_memory(
                                      arguments["npc_id"],
-                                     arguments.get("filter_label"),
+                                     arguments.get("filter_name"),
                                  ),
         "get_exploration_status": lambda: api.get_exploration_status(arguments["npc_id"]),
         "get_object_at":         lambda: api.get_object_at(arguments["x"], arguments["y"]),
         "get_all_objects":       lambda: api.get_all_objects(),
+        "set_npc_target":        lambda: api.set_npc_target(
+                                     arguments["npc_id"],
+                                     arguments["x"],
+                                     arguments["y"],
+                                 ),
     }
 
     if tool_name not in dispatch:

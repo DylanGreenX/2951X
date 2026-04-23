@@ -1,0 +1,17 @@
+{
+  "run_id": "20260420T235118_seed6_experiment_embodied_deterministic_trial6",
+  "tag": "experiment_embodied_deterministic_trial6",
+  "outcome": "experiment_complete",
+  "tick_count": 40,
+  "interaction_count": 1,
+  "duration_seconds": 9.29692,
+  "started_at": "2026-04-20T23:51:18.351952+00:00",
+  "ended_at": "2026-04-20T23:51:27.648872+00:00",
+  "stats": {
+    "npc_steps": 40,
+    "npc_coverage": 0.3867,
+    "target_was_observed": false,
+    "outcome_bucket": "correct_abstention",
+    "response_time_ms": 0.020199979189783335
+  }
+}
