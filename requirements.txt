@@ -4,3 +4,6 @@ pandas>=2.0
 matplotlib>=3.8
 google-genai>=1.70
 python-dotenv>=1.2
+transformers>=4.48
+torch>=2.4
+safetensors>=0.4

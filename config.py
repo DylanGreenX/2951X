@@ -108,7 +108,7 @@ NPC_USE_LLM_JUDGE = True
 NPC_JUDGE_MODEL = "gemini-2.5-pro"
 NPC_OBSERVED_CELLS_VISIBLE = False # when False, NPC sight range and observed cells are not visible to player
 # "deterministic" | "llm" | "slm"
-NPC_RESPONSE_MODE = "llm"
+NPC_RESPONSE_MODE = "slm"
 NPC_LLM_MAX_TOOL_TURNS = 4
 NPC_LLM_MAX_OUTPUT_TOKENS = 128
 NPC_LLM_TEMPERATURE = 0.4
@@ -119,9 +119,6 @@ NPC_LLM_LOG_ENABLED = True
 # events flow into the run's game.jsonl; this value is only used if a run
 # log has not been started (e.g. during unit tests or ad-hoc scripts).
 NPC_LLM_LOG_PATH = "llm_interactions.jsonl"
-# Root directory for per-run game logs. Each run creates a subdirectory
-# here containing game.jsonl (events) and summary.json (outcome).
-GAME_LOG_DIR = "logs/runs"
 
 # NPC Knowledge Mode — the knowledge axis in the experiment matrix.
 # "embodied" → NPC only knows what it personally observed (realistic, default)
@@ -166,6 +163,7 @@ NPC_COLOR = (255, 200, 50)
 PLAYER_COLOR = (255, 255, 255)
 TEXT_COLOR = (200, 200, 200)
 HIGHLIGHT_COLOR = (100, 200, 255)
+BG_IMAGE_PATH = "bg.png"
 
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"  # paid tier; reliable text output
 # Note: gemini-2.5-flash-lite is cheaper but returns 0 output tokens on ~15%
