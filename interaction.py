@@ -411,14 +411,32 @@ class InteractionManager:
         objects = result.get("objects", [])
         if objects:
             lines.append("Complete world knowledge:")
+        world_size: int | None = None
         for obj in objects:
             position = obj.get("position", {})
             x = position.get("x")
             y = position.get("y")
             if not isinstance(x, int) or not isinstance(y, int):
                 continue
-            natural_name = obj.get("natural_name") or get_natural_object_name(obj.get("label", ""))
-            natural_location = get_natural_location_name(x, y)
+            natural_name = (
+                obj.get("name")
+                or obj.get("natural_name")
+                or get_natural_object_name(obj.get("label", ""))
+            )
+            natural_location = obj.get("region")
+            if not natural_location:
+                if world_size is None:
+                    try:
+                        world_info = self.api.get_world_info()
+                        size = world_info.get("size")
+                        world_size = size if isinstance(size, int) else None
+                    except Exception:
+                        world_size = None
+                natural_location = (
+                    get_natural_position_name(x, y, world_size)
+                    if world_size is not None
+                    else f"at coordinates ({x}, {y})"
+                )
             lines.append(f"The {natural_name} is {natural_location}.")
         return lines
 
