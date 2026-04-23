@@ -331,6 +331,10 @@ class SLMClient:
         self.device: str | None = None
         self._torch: Any | None = None
 
+    def preload(self) -> None:
+        """Download and load local model assets ahead of the first generation."""
+        self._ensure_loaded()
+
     def generate(
         self,
         prompt: str,

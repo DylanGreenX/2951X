@@ -120,6 +120,26 @@ NPC_LLM_LOG_ENABLED = True
 # log has not been started (e.g. during unit tests or ad-hoc scripts).
 NPC_LLM_LOG_PATH = "llm_interactions.jsonl"
 
+# Root directory for per-run game logs. Each run creates a subdirectory
+# here containing game.jsonl (events) and summary.json (outcome).
+GAME_LOG_DIR = "logs/runs"
+
+# Local Hugging Face SLM backend. Change NPC_SLM_MODEL_ID to the "1.7b"
+# preset to test the larger SmolLM checkpoint without changing code.
+NPC_SLM_MODEL_PRESETS = {
+    "135m": "HuggingFaceTB/SmolLM-135M",
+    "1.7b": "HuggingFaceTB/SmolLM-1.7B",
+}
+NPC_SLM_MODEL_ID = NPC_SLM_MODEL_PRESETS["135m"]
+NPC_SLM_DEVICE = "auto"          # "auto" | "cuda" | "mps" | "cpu"
+NPC_SLM_DTYPE = "auto"           # "auto" | "float16" | "bfloat16" | "float32"
+NPC_SLM_MAX_NEW_TOKENS = 96
+NPC_SLM_DO_SAMPLE = False
+NPC_SLM_TEMPERATURE = 0.2
+NPC_SLM_TOP_P = 0.9
+NPC_SLM_ENABLE_TOOL_CALLS = False
+NPC_SLM_MAX_TOOL_TURNS = 2
+
 # NPC Knowledge Mode — the knowledge axis in the experiment matrix.
 # "embodied" → NPC only knows what it personally observed (realistic, default)
 # "perfect"  → NPC knows the full world state (omniscient baseline)
@@ -163,7 +183,6 @@ NPC_COLOR = (255, 200, 50)
 PLAYER_COLOR = (255, 255, 255)
 TEXT_COLOR = (200, 200, 200)
 HIGHLIGHT_COLOR = (100, 200, 255)
-BG_IMAGE_PATH = "bg.png"
 
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"  # paid tier; reliable text output
 # Note: gemini-2.5-flash-lite is cheaper but returns 0 output tokens on ~15%

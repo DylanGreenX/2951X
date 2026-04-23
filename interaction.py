@@ -370,7 +370,6 @@ class InteractionManager:
 
         system_content = self._build_slm_system_prompt(
             npc_id=npc_id,
-            target_label=label,
             target_natural_name=natural_name,
             context_lines=context_lines,
             is_embodied=is_embodied,
@@ -443,7 +442,6 @@ class InteractionManager:
     def _build_slm_system_prompt(
         self,
         npc_id: str,
-        target_label: str,
         target_natural_name: str,
         context_lines: list[str],
         is_embodied: bool,
@@ -473,8 +471,7 @@ class InteractionManager:
             "You are a seasoned traveler in Skyrim. "
             f"{knowledge_instruction}{sharing_instruction}\n"
             "Do not invent locations. Prefer natural place names over coordinates.\n"
-            f"Target label: {target_label}\n"
-            f"Target local name: {target_natural_name}\n"
+            f"Target item: {target_natural_name}\n"
             f"NPC id: {npc_id}\n"
             "Known facts:\n"
             f"{context_str}\n"
@@ -1056,9 +1053,9 @@ class InteractionManager:
             "You may either answer now or request one tool call.\n"
             "Output exactly one strict JSON object and no extra text.\n"
             "For a tool call, use this shape:\n"
-            '{"tool": "get_npc_memory", "arguments": {"npc_id": "npc_0", "filter_label": "red_triangle"}}\n'
+            '{"tool": "get_npc_memory", "arguments": {"npc_id": "npc_0", "filter_name": "crimson flag"}}\n'
             "For a final answer, use this shape:\n"
-            '{"final": "I saw a crimson flag near the windmill."}\n\n'
+            '{"final": "I saw a crimson flag in the windmill fields."}\n\n'
             f"Available tools: {json.dumps(tool_specs, ensure_ascii=True)}\n"
             f"Previous tool results: {results_text}\n"
             "JSON:"

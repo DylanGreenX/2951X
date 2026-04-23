@@ -15,6 +15,7 @@ from world import GameWorld
 from entities import Player, NPC
 from npc_brain import NPCBrainGoalDriven, NPCBrainWandering
 from interaction import InteractionManager
+from llm import SLMClient
 from pygame_game_api import PygameGameAPI
 from rlang_engine import get_natural_object_name
 from game_log import GameLogger
@@ -65,17 +66,35 @@ class ExperimentCondition:
 
 
 class ExperimentRunner:
+    def __init__(self) -> None:
+        self._slm_client: SLMClient | None = None
+
+    def _get_slm_client(self) -> SLMClient:
+        if self._slm_client is None:
+            self._slm_client = SLMClient(
+                model_id=getattr(config, "NPC_SLM_MODEL_ID", "HuggingFaceTB/SmolLM-135M"),
+                device=getattr(config, "NPC_SLM_DEVICE", "auto"),
+                dtype=getattr(config, "NPC_SLM_DTYPE", "auto"),
+            )
+            self._slm_client.preload()
+        return self._slm_client
 
     def run_condition(self, condition: ExperimentCondition, num_trials: int = 50) -> List[Dict[str, Any]]:
         print(f"Running {condition.name} ({num_trials} trials)...")
+        slm_client = self._get_slm_client() if condition.response_mode == "slm" else None
         results = []
         for trial in range(num_trials):
-            results.append(self._run_trial(condition, trial))
+            results.append(self._run_trial(condition, trial, slm_client=slm_client))
             if (trial + 1) % 10 == 0:
                 print(f"  Completed {trial + 1}/{num_trials} trials")
         return results
 
-    def _run_trial(self, condition: ExperimentCondition, trial: int) -> Dict[str, Any]:
+    def _run_trial(
+        self,
+        condition: ExperimentCondition,
+        trial: int,
+        slm_client: SLMClient | None = None,
+    ) -> Dict[str, Any]:
         # Modality flags have to be applied BEFORE init_trial because the goal
         # label in competitive mode depends on NPC_COMPETING, and selective
         # attention / decay are read inside RLangState.observe during the
@@ -129,6 +148,7 @@ class ExperimentRunner:
             target_location = self._find_target_location(world, target_label)
             interaction_manager = InteractionManager(
                 api=PygameGameAPI.from_game(world, player, brain),
+                slm_client=slm_client,
                 enforce_grounding=False,
             )
 

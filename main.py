@@ -19,6 +19,7 @@ from world import GameWorld
 from entities import Player, NPC
 from npc_brain import NPCBrainGoalDriven, NPCBrainWandering
 from interaction import InteractionManager
+from llm import SLMClient
 from pygame_game_api import PygameGameAPI
 from game_log import GameLogger
 
@@ -56,7 +57,24 @@ def _resolve_npc_goal(target_color: str, target_shape: str) -> str | None:
     return random.choice(choices)
 
 
-def _init_game(seed=None, prev_logger: GameLogger | None = None):
+def _build_preloaded_slm_client() -> SLMClient | None:
+    """Load the local SLM once at startup so interaction stays on the hot path."""
+    if config.NPC_RESPONSE_MODE != "slm":
+        return None
+    slm_client = SLMClient(
+        model_id=getattr(config, "NPC_SLM_MODEL_ID", "HuggingFaceTB/SmolLM-135M"),
+        device=getattr(config, "NPC_SLM_DEVICE", "auto"),
+        dtype=getattr(config, "NPC_SLM_DTYPE", "auto"),
+    )
+    slm_client.preload()
+    return slm_client
+
+
+def _init_game(
+    seed=None,
+    prev_logger: GameLogger | None = None,
+    slm_client: SLMClient | None = None,
+):
     """Create a fresh world, player, NPC, brain, interaction manager, and game logger.
 
     If ``prev_logger`` is passed (e.g. on reset), it is ended first so its
@@ -85,7 +103,10 @@ def _init_game(seed=None, prev_logger: GameLogger | None = None):
     else:
         brain = NPCBrainGoalDriven(npc, world, goal_label=goal_label)
 
-    interaction_manager = InteractionManager(api=PygameGameAPI.from_game(world, player, brain))
+    interaction_manager = InteractionManager(
+        api=PygameGameAPI.from_game(world, player, brain),
+        slm_client=slm_client,
+    )
 
     # Start the run log. GameLogger retargets config.NPC_LLM_LOG_PATH so all
     # LLM events auto-flow into the per-run game.jsonl for auditing.
@@ -140,7 +161,11 @@ def main():
 
     assets = _load_map_assets(grid_px)
 
-    world, player, npc, brain, interaction_manager, logger = _init_game(seed=42)
+    shared_slm_client = _build_preloaded_slm_client()
+    world, player, npc, brain, interaction_manager, logger = _init_game(
+        seed=42,
+        slm_client=shared_slm_client,
+    )
 
     # Event log (notable things that happened)
     event_log: list[str] = []
@@ -172,7 +197,10 @@ def main():
                         brain.set_target_pos((player.x,player.y))
                     elif event.key == pygame.K_r:
                         world, player, npc, brain, interaction_manager, logger = (
-                            _init_game(prev_logger=logger)
+                            _init_game(
+                                prev_logger=logger,
+                                slm_client=shared_slm_client,
+                            )
                         )
                         event_log.clear()
                         in_interaction = False
