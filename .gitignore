@@ -3,3 +3,7 @@
 .env
 *.pyc
 /2951X/
+# Run-time artefacts
+/logs/runs/
+*.log
+full_benchmark_log.txt
