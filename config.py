@@ -129,16 +129,39 @@ GAME_LOG_DIR = "logs/runs"
 NPC_SLM_MODEL_PRESETS = {
     "135m": "HuggingFaceTB/SmolLM-135M",
     "1.7b": "HuggingFaceTB/SmolLM-1.7B",
+    "1.7b-instruct": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
 }
-NPC_SLM_MODEL_ID = NPC_SLM_MODEL_PRESETS["135m"]
+NPC_SLM_MODEL_ID = NPC_SLM_MODEL_PRESETS["1.7b-instruct"]
 NPC_SLM_DEVICE = "auto"          # "auto" | "cuda" | "mps" | "cpu"
 NPC_SLM_DTYPE = "auto"           # "auto" | "float16" | "bfloat16" | "float32"
-NPC_SLM_MAX_NEW_TOKENS = 96
+NPC_SLM_MAX_NEW_TOKENS = 192
 NPC_SLM_DO_SAMPLE = False
 NPC_SLM_TEMPERATURE = 0.2
 NPC_SLM_TOP_P = 0.9
-NPC_SLM_ENABLE_TOOL_CALLS = False
-NPC_SLM_MAX_TOOL_TURNS = 2
+NPC_SLM_ENABLE_TOOL_CALLS = True
+NPC_SLM_MAX_TOOL_TURNS = 3
+# Wrap the SLM prompt in the tokenizer's chat template before generation.
+# Must be True for instruct/chat checkpoints (SmolLM2-*-Instruct, Qwen, etc)
+# or instruct tuning never activates. Leave False for base completion models
+# (SmolLM-1.7B, SmolLM-135M) which do not ship a chat template.
+NPC_SLM_USE_CHAT_TEMPLATE = True
+# When True AND tool calls are enabled, append grid-coordinate hints to the
+# SLM's Known facts for each observed shape. Lets the SLM call set_npc_target
+# directly without first routing through a get_npc_memory lookup (which a
+# 1.7B model struggles to chain in 2 turns). Independent of the LLM path.
+NPC_SLM_INCLUDE_COORDS = True
+# Narrow the SLM tool menu to a curated subset. A 1.7B model confuses similar
+# tools (`get_npc_state` vs `set_npc_target`) when presented with the full
+# menu. Pruning to the action-as-answer tool plus memory lookup drives the
+# selection rate sharply higher. Set to None to keep the full menu (same as
+# the LLM path).
+NPC_SLM_TOOL_WHITELIST: list[str] | None = ["set_npc_target"]
+# Post-process SLM final strings: if the model mentions a region that is NOT
+# among the NPC's observed regions, rewrite the response to a pure refusal.
+# Mitigates the "leak-and-negate" failure mode ("I have not seen the flag in
+# the merchant quarter") produced by instruct models' commit-bias. Independent
+# of NPC_ENFORCE_GROUNDING which only catches literal (x, y) claims.
+NPC_SLM_REGION_GROUNDING = True
 
 # NPC Knowledge Mode — the knowledge axis in the experiment matrix.
 # "embodied" → NPC only knows what it personally observed (realistic, default)
