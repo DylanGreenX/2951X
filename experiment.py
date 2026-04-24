@@ -344,7 +344,7 @@ CORE_CONDITIONS = [
 ]
 
 
-# Extended modalities — LLM-only by design. Each modality changes either what
+# Extended modalities — LLM and SLM only. Each modality changes either what
 # the NPC knows when asked or what it chooses to reveal; running deterministic
 # responses across them would be lookup-table variants and miss the point.
 EXTENDED_CONDITIONS = [
@@ -358,6 +358,18 @@ EXTENDED_CONDITIONS = [
     ),
     ExperimentCondition(
         "Embodied + LLM + SelectiveAttention", "embodied", "llm",
+        selective_attention="color",
+    ),
+    ExperimentCondition(
+        "Embodied + SLM + Competitive", "embodied", "slm",
+        competing=True,
+    ),
+    ExperimentCondition(
+        "Embodied + SLM + MemoryDecay", "embodied", "slm",
+        memory_decay_ticks=20,
+    ),
+    ExperimentCondition(
+        "Embodied + SLM + SelectiveAttention", "embodied", "slm",
         selective_attention="color",
     ),
 ]

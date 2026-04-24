@@ -187,6 +187,9 @@ class InteractionManager:
             raw_response = self._call_slm(messages, tools, target_label)
             self.last_raw_response = raw_response
             response = self._apply_grounding_guard(brain, raw_response)
+            response = self._apply_slm_region_guard(
+                brain, response, target_label,
+            )
             self.last_response = response
             self._log_llm_event(
                 "interaction_final",
@@ -368,6 +371,25 @@ class InteractionManager:
         if not is_embodied:
             context_lines = self._build_perfect_slm_context(label, context_lines)
 
+        # When tool calls are on, append coordinate hints so the SLM can reach
+        # set_npc_target in one turn. Runs for BOTH embodied and perfect modes
+        # because perfect mode also populates brain.state.shape_locations via
+        # _give_perfect_knowledge — the coord is available, we just weren't
+        # surfacing it. Without this hint the model either refuses (when the
+        # decision rule is strict) or fabricates coords and parrots the tool
+        # result back as its final answer.
+        target_has_coords = bool(
+            getattr(brain.state, "shape_locations", {}).get(label)
+        )
+        if (
+            getattr(config, "NPC_SLM_ENABLE_TOOL_CALLS", False)
+            and getattr(config, "NPC_SLM_INCLUDE_COORDS", False)
+            and target_has_coords
+        ):
+            context_lines = self._augment_slm_context_with_coords(
+                context_lines, brain, target_label=label,
+            )
+
         system_content = self._build_slm_system_prompt(
             npc_id=npc_id,
             target_natural_name=natural_name,
@@ -376,6 +398,16 @@ class InteractionManager:
             is_competitive=is_competitive,
         )
         tools = self._get_tool_schemas(is_embodied)
+        whitelist = getattr(config, "NPC_SLM_TOOL_WHITELIST", None)
+        if whitelist is not None:
+            tools = [t for t in tools if t["function"]["name"] in whitelist]
+        # Withhold set_npc_target entirely when there is no target coord for
+        # the model to use. Prevents the 1.7B model from fabricating (x, y)
+        # arguments when selective attention / memory decay / non-observed
+        # trials leave the target absent from shape_locations. Pairs with the
+        # "no coord → refuse" branch of the decision rule.
+        if not target_has_coords:
+            tools = [t for t in tools if t["function"]["name"] != "set_npc_target"]
         return [
             {"role": "system", "content": system_content},
             {"role": "user", "content": f"Where is the {natural_name}?"},
@@ -439,6 +471,63 @@ class InteractionManager:
             lines.append(f"The {natural_name} is {natural_location}.")
         return lines
 
+    def _augment_slm_context_with_coords(
+        self,
+        context_lines: list[str],
+        brain: NPCBrain,
+        target_label: str | None = None,
+    ) -> list[str]:
+        """Append coord hints for the SLM context.
+
+        We used to dump coords for every observed item, but that inflated the
+        prompt and the 1.7B model tended to pattern-match on the coord block,
+        echoing it back in the final string. Narrowing to the target label
+        keeps the hint small and focused on the single tool call the model is
+        actually encouraged to make (set_npc_target on the target cell).
+        """
+        shape_locations = getattr(brain.state, "shape_locations", {}) or {}
+        if not shape_locations or not target_label:
+            return context_lines
+        positions = shape_locations.get(target_label)
+        if not positions:
+            return context_lines
+        natural_name = get_natural_object_name(target_label)
+        (x, y) = positions[0]
+        return list(context_lines) + [
+            f"Target coordinate for set_npc_target: {natural_name} is at (x={x}, y={y}).",
+        ]
+
+    def _build_slm_post_tool_status(
+        self,
+        tool_results: list[dict[str, Any]],
+    ) -> str:
+        """Render a loud 'next action required' block when a tool has fired.
+
+        SmolLM2-1.7B-Instruct tends to loop the same tool call across turns if
+        the success signal is buried inside the 'Previous tool results' JSON.
+        Promoting a short directive block to the top of the prompt breaks the
+        loop: the model sees the completed action first and transitions to the
+        final answer, which is what the benchmark rewards.
+        """
+        if not tool_results:
+            return ""
+        last = tool_results[-1]
+        # tool_results entries are shaped {"tool": name, "arguments": ..., "result": ...}
+        # (see _call_slm_with_tools). last_tool_calls entries use "name" instead.
+        name = last.get("tool") or last.get("name")
+        result = last.get("result") or {}
+        if name == "set_npc_target" and result.get("success"):
+            pos = result.get("target_position", {})
+            x = pos.get("x"); y = pos.get("y")
+            return (
+                "STATUS: set_npc_target has already succeeded "
+                f"(the NPC is now heading to x={x}, y={y}). "
+                "DO NOT call any tool this turn. Your ONLY valid reply is a "
+                'JSON object of the form {"final": "<one short in-character '
+                'sentence naming the region>"}.\n\n'
+            )
+        return ""
+
     def _build_slm_system_prompt(
         self,
         npc_id: str,
@@ -450,9 +539,9 @@ class InteractionManager:
         context_str = "\n".join(f"- {line}" for line in context_lines)
         if is_embodied:
             knowledge_instruction = (
-                "Only answer from the known facts below. These facts are your "
-                "personal observations. If the facts do not mention the target, "
-                "say that you have not seen it."
+                "Answer using your Known facts below. If a fact names a location "
+                "for the target item, tell the traveler that location. Only say "
+                "you have not seen it when no fact names the target."
             )
         else:
             knowledge_instruction = (
@@ -677,6 +766,77 @@ class InteractionManager:
             )
         return response
 
+    def _apply_slm_region_guard(
+        self,
+        brain: NPCBrain,
+        response: str,
+        target_label: str,
+    ) -> str:
+        """Post-process the SLM final string to block leak-and-negate refusals.
+
+        The failure mode: SmolLM2-1.7B-Instruct produces responses like
+        "I have not seen the crimson flag in the merchant quarter" when the
+        target was NOT observed. The merchant quarter is real (NPC visited it)
+        but the target was not seen there. Regex scoring reads a committed
+        region and logs it as a hallucination.
+
+        Target-aware check:
+          - if target was NOT observed AND the response mentions any region:
+            rewrite to a refusal that names no region.
+          - if target WAS observed AND the response mentions a region that
+            is NOT where the NPC actually saw the target: rewrite likewise.
+        Independent of the coord-based guard which only catches literal (x,y).
+        """
+        if not getattr(config, "NPC_SLM_REGION_GROUNDING", False):
+            return response
+        if getattr(config, "NPC_RESPONSE_MODE", "") != "slm":
+            return response
+        if getattr(config, "NPC_KNOWLEDGE_MODE", "embodied") != "embodied":
+            return response
+        if not response:
+            return response
+
+        mentioned = extract_regions_from_text(response)
+        if not mentioned:
+            return response
+
+        # Target-specific grounding: which regions did the NPC actually see
+        # the target item in?
+        world_size = getattr(brain.state, "world_size", None)
+        target_positions = (
+            brain.state.shape_locations.get(target_label, [])
+            if hasattr(brain.state, "shape_locations") else []
+        )
+        target_regions: set[str] = set()
+        if world_size and target_positions:
+            for (x, y) in target_positions:
+                target_regions.add(get_natural_position_name(x, y, world_size))
+
+        # Two failure patterns we want to rewrite:
+        #   (1) target NOT observed AND response mentions any region
+        #       → pure leak-and-negate hallucination.
+        #   (2) target WAS observed but the response does NOT include the
+        #       target's actual region AND does include some other region
+        #       → confabulated region claim.
+        # Case (3), response includes the target region plus some other
+        # in-context region, is fine — it's grounded, just verbose.
+        if target_regions:
+            if target_regions & mentioned:
+                return response
+            ungrounded = mentioned
+        else:
+            ungrounded = mentioned  # pure hallucination
+
+        self.last_grounding_violations = sorted(
+            set(self.last_grounding_violations or [])
+            | {f"region:{r}" for r in ungrounded}
+        )
+        self.last_grounding_violation = True
+        natural_name = get_natural_object_name(target_label)
+        return (
+            f"I have not seen the {natural_name} during my travels, traveler."
+        )
+
     def _apply_sharing_policy_to_tool_result(
         self,
         tool_name: str,
@@ -828,7 +988,10 @@ class InteractionManager:
             },
         )
         try:
-            result = slm_client.generate(prompt, generation_config)
+            result = slm_client.generate(
+                prompt, generation_config,
+                use_chat_template=getattr(config, "NPC_SLM_USE_CHAT_TEMPLATE", False),
+            )
         except SLMClientError as exc:
             self.last_llm_error = str(exc)
             self._log_llm_event(
@@ -906,7 +1069,10 @@ class InteractionManager:
                 },
             )
             try:
-                result = slm_client.generate(prompt, generation_config)
+                result = slm_client.generate(
+                prompt, generation_config,
+                use_chat_template=getattr(config, "NPC_SLM_USE_CHAT_TEMPLATE", False),
+            )
             except SLMClientError as exc:
                 self.last_llm_error = str(exc)
                 self._log_llm_event(
@@ -1031,33 +1197,72 @@ class InteractionManager:
         tools: list[dict[str, Any]],
         tool_results: list[dict[str, Any]],
     ) -> str:
+        """
+        Tool-mode prompt for the SLM. Ordering is deliberate: we put the tool
+        menu + schema rules near the top (static reference material) and the
+        NPC's Known facts + the player's question near the JSON cue. SmolLM
+        has short effective attention under long context, so the pieces that
+        must inform the next token go LAST.
+
+        Tool specs are compressed to name + one-line description. The full
+        JSON-schema dump from the LLM path was ~2000 tokens and swamped the
+        Known facts block; the SLM doesn't need argument types to pick a tool.
+        """
         system_prompt = messages[0]["content"]
         user_prompt = messages[1]["content"]
-        tool_specs = [
-            {
-                "name": tool["function"]["name"],
-                "description": tool["function"].get("description", ""),
-                "parameters": tool["function"].get("parameters", {}),
-            }
-            for tool in tools
-        ]
-        if tool_results:
-            results_text = json.dumps(tool_results, ensure_ascii=True)
-        else:
-            results_text = "[]"
+
+        tool_menu_lines = []
+        for tool in tools:
+            fn = tool["function"]
+            name = fn["name"]
+            params = fn.get("parameters", {}).get("properties", {}) or {}
+            required = set(fn.get("parameters", {}).get("required", []) or [])
+            # Show "arg: type" so the 1.7B model stops guessing argument names.
+            arg_sig = ", ".join(
+                (f"{k}:{v.get('type', 'any')}" if k in required
+                 else f"{k}?:{v.get('type', 'any')}")
+                for k, v in params.items()
+            )
+            short_desc = fn.get("description", "").splitlines()[0].strip()
+            tool_menu_lines.append(f"- {name}({arg_sig}): {short_desc}")
+        tool_menu = "\n".join(tool_menu_lines) if tool_menu_lines else "(none)"
+
+        # When a successful set_npc_target call already sits in tool_results,
+        # promote a loud "status" block so the 1.7B model transitions to the
+        # final answer instead of looping the same tool call again.
+        post_tool_status = self._build_slm_post_tool_status(tool_results)
+        results_text = (
+            json.dumps(tool_results, ensure_ascii=True) if tool_results else "[]"
+        )
 
         return (
-            "Complete the NPC answer for this game dialogue.\n\n"
+            "You reply as the NPC. Output exactly one strict JSON object, nothing else.\n\n"
+            f"{post_tool_status}"
+            "Available tools:\n"
+            f"{tool_menu}\n\n"
+            "Reply in ONE of these two shapes (fill in your own content; do not copy):\n"
+            '  tool  : {"tool": "<name_from_list>", "arguments": { ... }}\n'
+            '  final : {"final": "<one short in-character sentence, MAX 25 WORDS>"}\n\n'
+            "Guidance:\n"
+            "- Keep the final string to ONE sentence. Do NOT dump memory.\n"
+            "- Decision rule:\n"
+            "    (a) If the Known facts contain a line starting with\n"
+            "        'Target coordinate for set_npc_target: <name> is at (x=X, y=Y)',\n"
+            "        your FIRST turn MUST be a set_npc_target tool call using those\n"
+            "        exact X, Y. Skeleton (substitute actual npc_id and the real X, Y):\n"
+            '          {"tool": "set_npc_target", "arguments": {"npc_id": "<npc_id>", "x": <X>, "y": <Y>}}\n'
+            "        After Previous tool results shows that call succeeded, your NEXT\n"
+            "        turn MUST be a final answer, NOT another tool call. The final string\n"
+            "        should name the target region in character (write your own wording).\n"
+            "    (b) If there is NO 'Target coordinate' line in Known facts, skip tools\n"
+            "        entirely and IMMEDIATELY reply with {\"final\": <your refusal string>}.\n"
+            "        Write the refusal in your own words, in character. Do not invent\n"
+            "        coordinates or a location.\n"
+            "- You have at most one successful set_npc_target call per conversation; do\n"
+            "  NOT call it again after it succeeded.\n\n"
+            f"Previous tool results: {results_text}\n\n"
             f"{system_prompt}\n\n"
-            f"Player question: {user_prompt}\n\n"
-            "You may either answer now or request one tool call.\n"
-            "Output exactly one strict JSON object and no extra text.\n"
-            "For a tool call, use this shape:\n"
-            '{"tool": "get_npc_memory", "arguments": {"npc_id": "npc_0", "filter_name": "crimson flag"}}\n'
-            "For a final answer, use this shape:\n"
-            '{"final": "I saw a crimson flag in the windmill fields."}\n\n'
-            f"Available tools: {json.dumps(tool_specs, ensure_ascii=True)}\n"
-            f"Previous tool results: {results_text}\n"
+            f"Player question: {user_prompt}\n"
             "JSON:"
         )
 
@@ -1070,8 +1275,19 @@ class InteractionManager:
         }
 
     def _parse_slm_tool_output(self, text: str) -> dict[str, Any]:
+        stripped = text.strip()
+        if not stripped:
+            raise ValueError("SLM returned empty output.")
+        # Locate the first '{' — SmolLM often prefixes the JSON with a filler
+        # word ("JSON:", "Answer:") or appends trailing prose after the object.
+        # JSONDecoder.raw_decode accepts first-object-then-anything, so we can
+        # recover a well-formed JSON object that was emitted correctly but
+        # followed by garbage.
+        start = stripped.find("{")
+        if start == -1:
+            raise ValueError("SLM output contains no JSON object.")
         try:
-            data = json.loads(text.strip())
+            data, _ = json.JSONDecoder().raw_decode(stripped[start:])
         except json.JSONDecodeError as exc:
             raise ValueError("SLM did not return one strict JSON object.") from exc
         if not isinstance(data, dict):

@@ -339,8 +339,18 @@ class SLMClient:
         self,
         prompt: str,
         generation_config: dict[str, Any] | None = None,
+        *,
+        use_chat_template: bool = False,
     ) -> SLMResult:
-        """Generate a completion and return text plus local token accounting."""
+        """Generate a completion and return text plus local token accounting.
+
+        When ``use_chat_template`` is True and the tokenizer exposes a chat
+        template (instruct/chat checkpoints do; base models do not), the raw
+        ``prompt`` is wrapped as a single-turn user message and rendered through
+        the model's native turn tokens via ``apply_chat_template``. This is
+        load-bearing for SmolLM2-Instruct: without it the instruct tuning never
+        activates and the model falls back to base-completion behaviour.
+        """
         self._ensure_loaded()
         assert self.tokenizer is not None
         assert self.model is not None
@@ -369,7 +379,19 @@ class SLMClient:
         model_kwargs.update(generation_kwargs)
 
         try:
-            inputs = self.tokenizer(prompt, return_tensors="pt")
+            if use_chat_template and getattr(self.tokenizer, "chat_template", None):
+                # Render to string first, then tokenize via the normal path.
+                # This gives us a BatchEncoding with attention_mask for free,
+                # and avoids the tensor/dict return-shape differences between
+                # transformers versions.
+                rendered = self.tokenizer.apply_chat_template(
+                    [{"role": "user", "content": prompt}],
+                    add_generation_prompt=True,
+                    tokenize=False,
+                )
+                inputs = self.tokenizer(rendered, return_tensors="pt")
+            else:
+                inputs = self.tokenizer(prompt, return_tensors="pt")
             inputs = self._move_inputs_to_device(inputs)
             input_ids = inputs["input_ids"]
             prompt_token_count = int(input_ids.shape[-1])
