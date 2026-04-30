@@ -83,9 +83,11 @@ class PygameGameAPI(GameAPIProvider):
         cls,
         world: GameWorld,
         player: Player,
-        brain: NPCBrain,
+        brain: NPCBrain | dict[str, NPCBrain],
     ) -> "PygameGameAPI":
         """Build a provider for the single-NPC demo."""
+        if isinstance(brain, dict):
+            return cls(world, player, brain)
         return cls(world, player, {cls.DEFAULT_NPC_ID: brain})
 
     # ── Private helpers ───────────────────────────────────────────────────────
@@ -292,4 +294,3 @@ class PygameGameAPI(GameAPIProvider):
             "success": True,
             "message": f"NPC {npc_id!r} is now navigating to ({x}, {y}).",
         }
-

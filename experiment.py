@@ -80,6 +80,7 @@ class ExperimentRunner:
         return self._slm_client
 
     def run_condition(self, condition: ExperimentCondition, num_trials: int = 50) -> List[Dict[str, Any]]:
+        self._validate_single_npc_config()
         print(f"Running {condition.name} ({num_trials} trials)...")
         slm_client = self._get_slm_client() if condition.response_mode == "slm" else None
         results = []
@@ -154,7 +155,7 @@ class ExperimentRunner:
 
             question = self._create_natural_question(world.target_color, world.target_shape)
             interaction_id = logger.log_interaction_pre(
-                world, player, npc, brain, world.target_color, world.target_shape
+                world, player, npc, world.target_color, world.target_shape, brain
             )
             start_time = time.perf_counter()
             _, response_text = interaction_manager.start_interaction(
@@ -162,9 +163,9 @@ class ExperimentRunner:
             )
             response_time_ms = (time.perf_counter() - start_time) * 1000
             logger.log_interaction_summary(
-                interaction_id, interaction_manager, brain, world,
+                interaction_id, interaction_manager, npc, world,
                 world.target_color, world.target_shape,
-                question, response_text,
+                question, response_text, brain,
             )
         finally:
             saved.restore()
@@ -236,9 +237,29 @@ class ExperimentRunner:
             self._give_perfect_knowledge(brain, world)
         return world, player, npc, brain
 
+    @staticmethod
+    def _validate_single_npc_config() -> None:
+        npc_count = int(getattr(config, "NPC_COUNT", 1))
+        if npc_count != 1:
+            raise ValueError(
+                f"Experiments currently support only single-NPC runs; NPC_COUNT is {npc_count}"
+            )
+        starts = getattr(config, "NPC_STARTS", None)
+        if starts is not None:
+            raise ValueError(
+                "Experiments currently support only the legacy single-NPC start path; "
+                "unset NPC_STARTS and use NPC_START instead"
+            )
+        competing_count = getattr(config, "NPC_COMPETING_COUNT", None)
+        if competing_count is not None:
+            raise ValueError(
+                "Experiments currently use condition.competing for the single NPC; "
+                "unset NPC_COMPETING_COUNT before running evals"
+            )
+
     def _create_natural_question(self, target_color: str, target_shape: str) -> str:
         label = f"{target_color}_{target_shape}"
-        return f"Please show me where the {get_natural_object_name(label)} is."
+        return f"Where is the {get_natural_object_name(label)}?"
 
     def _give_perfect_knowledge(self, brain, world):
         for x in range(world.size):

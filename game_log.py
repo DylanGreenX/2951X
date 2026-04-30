@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from entities import NPC, Player
     from interaction import InteractionManager
     from npc_brain import NPCBrain
+    from npc_party import NPCActor, NPCParty
     from world import GameWorld
 
 
@@ -53,14 +54,29 @@ DEFAULT_LOG_DIR = "logs/runs"
 
 
 @dataclass
-class _LastSnapshot:
-    """Previous observed state, used to compute per-tick deltas."""
+class _NPCRef:
+    npc_id: str
+    npc: Any
+    brain: Any
+    display_name: str
+
+
+@dataclass
+class _NPCLastSnapshot:
+    """Previous observed state for one NPC, used to compute per-tick deltas."""
     npc_pos: tuple[int, int] | None = None
-    player_pos: tuple[int, int] | None = None
     npc_observed_cells: set = field(default_factory=set)
     npc_observed_shape_keys: set = field(default_factory=set)
-    player_observed_cells: set = field(default_factory=set)
     coverage: float | None = None
+    steps_taken: int = 0
+
+
+@dataclass
+class _LastSnapshot:
+    """Previous observed state, used to compute per-tick deltas."""
+    npcs: dict[str, _NPCLastSnapshot] = field(default_factory=dict)
+    player_pos: tuple[int, int] | None = None
+    player_observed_cells: set = field(default_factory=set)
     tick_index: int = -1
 
 
@@ -111,8 +127,8 @@ class GameLogger:
         cls,
         world: "GameWorld",
         player: "Player",
-        npc: "NPC",
-        brain: "NPCBrain",
+        npc: "NPC | NPCParty | NPCActor",
+        brain: "NPCBrain | None" = None,
         *,
         tag: str = "play",
         seed: int | None = None,
@@ -135,15 +151,22 @@ class GameLogger:
         run_dir.mkdir(parents=True, exist_ok=True)
 
         logger = cls(run_dir=run_dir, run_id=run_id, tag=tag)
-        logger._write_run_start(world, player, npc, brain, seed=seed, extra_meta=extra_meta)
+        actors = logger._coerce_actors(npc, brain)
+        logger._write_run_start(world, player, actors, seed=seed, extra_meta=extra_meta)
         # Seed the snapshot so the first tick records only what's new beyond start.
         logger._last = _LastSnapshot(
-            npc_pos=(npc.x, npc.y),
             player_pos=(player.x, player.y),
-            npc_observed_cells=set(brain.state.observed_cells),
-            npc_observed_shape_keys=logger._shape_key_set(brain),
             player_observed_cells=set(player.observed_cells),
-            coverage=brain.state.coverage,
+            npcs={
+                actor.npc_id: _NPCLastSnapshot(
+                    npc_pos=(actor.npc.x, actor.npc.y),
+                    npc_observed_cells=set(actor.brain.state.observed_cells),
+                    npc_observed_shape_keys=logger._shape_key_set(actor.brain),
+                    coverage=actor.brain.state.coverage,
+                    steps_taken=actor.npc.steps_taken,
+                )
+                for actor in actors
+            },
             tick_index=0,
         )
         return logger
@@ -154,10 +177,12 @@ class GameLogger:
         self,
         world: "GameWorld",
         player: "Player",
-        npc: "NPC",
-        brain: "NPCBrain",
+        npc: "NPC | NPCParty | NPCActor",
+        brain: "NPCBrain | None" = None,
         *,
         event_msg: str | None = None,
+        event_msgs: list[dict[str, Any]] | None = None,
+        knowledge_exchanges: list[dict[str, Any]] | None = None,
         interaction_active: bool = False,
     ) -> None:
         """
@@ -170,59 +195,101 @@ class GameLogger:
             return
         self._tick_counter += 1
 
+        actors = self._coerce_actors(npc, brain)
         delta: dict[str, Any] = {}
-
-        npc_pos = (npc.x, npc.y)
-        if npc_pos != self._last.npc_pos:
-            delta["npc_pos"] = list(npc_pos)
+        npc_deltas: dict[str, Any] = {}
 
         player_pos = (player.x, player.y)
         if player_pos != self._last.player_pos:
             delta["player_pos"] = list(player_pos)
 
-        new_npc_cells = brain.state.observed_cells - self._last.npc_observed_cells
-        if new_npc_cells:
-            delta["npc_new_observed_cells"] = sorted(list(c) for c in new_npc_cells)
-
         new_player_cells = player.observed_cells - self._last.player_observed_cells
         if new_player_cells:
             delta["player_new_observed_cells"] = sorted(list(c) for c in new_player_cells)
 
-        current_shape_keys = self._shape_key_set(brain)
-        new_shape_keys = current_shape_keys - self._last.npc_observed_shape_keys
-        if new_shape_keys:
-            delta["npc_new_observed_shapes"] = [
-                {"label": label, "position": [x, y]}
-                for (label, x, y) in sorted(new_shape_keys)
-            ]
+        new_last_npcs: dict[str, _NPCLastSnapshot] = {}
+        for actor in actors:
+            last_npc = self._last.npcs.get(actor.npc_id, _NPCLastSnapshot())
+            actor_delta: dict[str, Any] = {}
 
-        coverage = round(brain.state.coverage, 4)
-        if self._last.coverage is None or abs(coverage - self._last.coverage) > 1e-6:
-            delta["npc_coverage"] = coverage
+            npc_pos = (actor.npc.x, actor.npc.y)
+            if npc_pos != last_npc.npc_pos:
+                actor_delta["pos"] = list(npc_pos)
 
+            new_npc_cells = actor.brain.state.observed_cells - last_npc.npc_observed_cells
+            if new_npc_cells:
+                actor_delta["new_observed_cells"] = sorted(list(c) for c in new_npc_cells)
+
+            current_shape_keys = self._shape_key_set(actor.brain)
+            new_shape_keys = current_shape_keys - last_npc.npc_observed_shape_keys
+            if new_shape_keys:
+                actor_delta["new_observed_shapes"] = [
+                    {"label": label, "position": [x, y]}
+                    for (label, x, y) in sorted(new_shape_keys)
+                ]
+
+            coverage = round(actor.brain.state.coverage, 4)
+            if last_npc.coverage is None or abs(coverage - last_npc.coverage) > 1e-6:
+                actor_delta["coverage"] = coverage
+            if actor.npc.steps_taken != last_npc.steps_taken:
+                actor_delta["steps_taken"] = actor.npc.steps_taken
+
+            if actor_delta:
+                npc_deltas[actor.npc_id] = actor_delta
+
+            new_last_npcs[actor.npc_id] = _NPCLastSnapshot(
+                npc_pos=npc_pos,
+                npc_observed_cells=set(actor.brain.state.observed_cells),
+                npc_observed_shape_keys=current_shape_keys,
+                coverage=coverage,
+                steps_taken=actor.npc.steps_taken,
+            )
+
+        merged_event_msgs = list(event_msgs or [])
         if event_msg:
-            delta["event_msg"] = event_msg
+            merged_event_msgs.append(
+                {
+                    "npc_id": actors[0].npc_id,
+                    "display_name": actors[0].display_name,
+                    "message": event_msg,
+                }
+            )
+        if merged_event_msgs:
+            delta["event_msgs"] = merged_event_msgs
+        if knowledge_exchanges:
+            delta["npc_interactions"] = knowledge_exchanges
         if interaction_active:
             delta["interaction_active"] = True
+        if npc_deltas:
+            delta["npcs"] = npc_deltas
+
+        has_content_before_legacy = bool(delta)
+        if len(actors) == 1:
+            actor = actors[0]
+            actor_delta = npc_deltas.get(actor.npc_id, {})
+            if "pos" in actor_delta:
+                delta["npc_pos"] = actor_delta["pos"]
+            if "new_observed_cells" in actor_delta:
+                delta["npc_new_observed_cells"] = actor_delta["new_observed_cells"]
+            if "new_observed_shapes" in actor_delta:
+                delta["npc_new_observed_shapes"] = actor_delta["new_observed_shapes"]
+            if "coverage" in actor_delta:
+                delta["npc_coverage"] = actor_delta["coverage"]
+            if has_content_before_legacy:
+                delta["npc_steps"] = actor.npc.steps_taken
+            if merged_event_msgs and len(merged_event_msgs) == 1:
+                delta["event_msg"] = merged_event_msgs[0]["message"]
 
         # Skip empty deltas. No state moved → no tick event.
-        if not delta and not event_msg:
+        if not has_content_before_legacy:
             return
 
-        self._write_event(
-            "tick",
-            tick=self._tick_counter,
-            npc_steps=npc.steps_taken,
-            **delta,
-        )
+        self._write_event("tick", tick=self._tick_counter, **delta)
 
         self._last = _LastSnapshot(
-            npc_pos=npc_pos,
             player_pos=player_pos,
-            npc_observed_cells=set(brain.state.observed_cells),
-            npc_observed_shape_keys=current_shape_keys,
+            npcs=new_last_npcs,
             player_observed_cells=set(player.observed_cells),
-            coverage=coverage,
             tick_index=self._tick_counter,
         )
 
@@ -230,10 +297,10 @@ class GameLogger:
         self,
         world: "GameWorld",
         player: "Player",
-        npc: "NPC",
-        brain: "NPCBrain",
+        npc: "NPC | NPCActor",
         target_color: str,
         target_shape: str,
+        brain: "NPCBrain | None" = None,
     ) -> int:
         """
         Write an ``interaction_pre`` event immediately before calling
@@ -250,26 +317,30 @@ class GameLogger:
         self._interaction_counter += 1
         interaction_id = self._interaction_counter
 
+        actor = self._coerce_actor(npc, brain)
         target_label = f"{target_color}_{target_shape}"
         target_position = self._find_shape_position(world, target_label)
-        npc_knowledge = self._snapshot_npc_knowledge(brain)
+        npc_knowledge = self._snapshot_npc_knowledge(actor.brain)
 
         self._write_event(
             "interaction_pre",
             interaction_id=interaction_id,
             tick=self._tick_counter,
+            npc_id=actor.npc_id,
+            npc_name=actor.display_name,
             target_label=target_label,
             target_natural_name=self._natural_object_name(target_label),
             target_position=list(target_position) if target_position else None,
             target_natural_location=(
                 self._natural_location_name(*target_position) if target_position else None
             ),
-            npc_pos=[npc.x, npc.y],
+            npc_pos=[actor.npc.x, actor.npc.y],
             player_pos=[player.x, player.y],
             npc_knowledge=npc_knowledge,
-            target_was_observed=brain.state.seen_label(target_label),
+            target_was_observed=actor.brain.state.seen_label(target_label),
             response_mode=getattr(config, "NPC_RESPONSE_MODE", None),
             knowledge_mode=getattr(config, "NPC_KNOWLEDGE_MODE", None),
+            multiple_knowledge_mode=getattr(config, "NPC_MULTIPLE_KNOWLEDGE_MODE", None),
             competing=getattr(config, "NPC_COMPETING", False),
         )
         return interaction_id
@@ -278,12 +349,13 @@ class GameLogger:
         self,
         interaction_id: int,
         interaction_manager: "InteractionManager",
-        brain: "NPCBrain",
+        npc: "NPC | NPCActor",
         world: "GameWorld",
         target_color: str,
         target_shape: str,
         question: str,
         response: str,
+        brain: "NPCBrain | None" = None,
     ) -> None:
         """
         Write the post-interaction audit event. Pairs ground truth at ask
@@ -292,6 +364,7 @@ class GameLogger:
         """
         if self._closed:
             return
+        actor = self._coerce_actor(npc, brain)
         target_label = f"{target_color}_{target_shape}"
         target_position = self._find_shape_position(world, target_label)
 
@@ -299,12 +372,14 @@ class GameLogger:
             "interaction_summary",
             interaction_id=interaction_id,
             tick=self._tick_counter,
+            npc_id=actor.npc_id,
+            npc_name=actor.display_name,
             target_label=target_label,
             target_natural_name=self._natural_object_name(target_label),
             target_position=list(target_position) if target_position else None,
-            target_was_observed=brain.state.seen_label(target_label),
-            npc_coverage=round(brain.state.coverage, 4),
-            npc_knowledge=self._snapshot_npc_knowledge(brain),
+            target_was_observed=actor.brain.state.seen_label(target_label),
+            npc_coverage=round(actor.brain.state.coverage, 4),
+            npc_knowledge=self._snapshot_npc_knowledge(actor.brain),
             question=question,
             response={
                 "raw": interaction_manager.last_raw_response,
@@ -363,12 +438,50 @@ class GameLogger:
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
+    @staticmethod
+    def _coerce_actors(
+        npc: "NPC | NPCParty | NPCActor",
+        brain: "NPCBrain | None",
+    ) -> list[_NPCRef]:
+        if brain is None and hasattr(npc, "actors"):
+            return [
+                _NPCRef(
+                    npc_id=actor.npc_id,
+                    npc=actor.npc,
+                    brain=actor.brain,
+                    display_name=getattr(actor, "display_name", actor.npc_id),
+                )
+                for actor in npc.actors
+            ]
+        if brain is None and hasattr(npc, "npc") and hasattr(npc, "brain"):
+            return [
+                _NPCRef(
+                    npc_id=getattr(npc, "npc_id", "npc_0"),
+                    npc=npc.npc,
+                    brain=npc.brain,
+                    display_name=getattr(npc, "display_name", "NPC 1"),
+                )
+            ]
+        if brain is not None:
+            return [_NPCRef(npc_id="npc_0", npc=npc, brain=brain, display_name="NPC 1")]
+        raise TypeError("Expected an NPCParty/NPCActor or an (npc, brain) pair")
+
+    @classmethod
+    def _coerce_actor(
+        cls,
+        npc: "NPC | NPCActor",
+        brain: "NPCBrain | None",
+    ) -> _NPCRef:
+        actors = cls._coerce_actors(npc, brain)
+        if len(actors) != 1:
+            raise ValueError("Interaction logging requires exactly one NPC")
+        return actors[0]
+
     def _write_run_start(
         self,
         world: "GameWorld",
         player: "Player",
-        npc: "NPC",
-        brain: "NPCBrain",
+        actors: list[_NPCRef],
         *,
         seed: int | None,
         extra_meta: Optional[dict[str, Any]],
@@ -395,6 +508,22 @@ class GameLogger:
             for s in world.shapes
         ]
 
+        npc_payloads = [
+            {
+                "npc_id": actor.npc_id,
+                "name": actor.display_name,
+                "start": [actor.npc.x, actor.npc.y],
+                "sight_range": actor.npc.sight_range,
+                "brain_type": type(actor.brain).__name__,
+                "goal_label": getattr(actor.npc, "goal_label", None),
+                "goal_natural_name": (
+                    self._natural_object_name(actor.npc.goal_label)
+                    if getattr(actor.npc, "goal_label", None) else None
+                ),
+            }
+            for actor in actors
+        ]
+
         payload: dict[str, Any] = {
             "run_id": self.run_id,
             "tag": self.tag,
@@ -406,6 +535,10 @@ class GameLogger:
                 "SHAPES": list(config.SHAPES),
                 "PLAYER_START": list(config.PLAYER_START),
                 "NPC_START": list(config.NPC_START),
+                "NPC_STARTS": [
+                    list(pos) for pos in getattr(config, "NPC_STARTS", []) or []
+                ],
+                "NPC_COUNT": getattr(config, "NPC_COUNT", 1),
                 "PLAYER_SIGHT_RANGE": config.PLAYER_SIGHT_RANGE,
                 "NPC_SIGHT_RANGE": config.NPC_SIGHT_RANGE,
                 "NPC_TICK_INTERVAL": config.NPC_TICK_INTERVAL,
@@ -415,7 +548,17 @@ class GameLogger:
                 "NPC_GOAL_COLOR": config.NPC_GOAL_COLOR,
                 "NPC_GOAL_SHAPE": config.NPC_GOAL_SHAPE,
                 "NPC_COMPETING": config.NPC_COMPETING,
+                "NPC_COMPETING_COUNT": getattr(config, "NPC_COMPETING_COUNT", None),
                 "NPC_KNOWLEDGE_MODE": getattr(config, "NPC_KNOWLEDGE_MODE", None),
+                "NPC_MULTIPLE_KNOWLEDGE_MODE": getattr(
+                    config, "NPC_MULTIPLE_KNOWLEDGE_MODE", None
+                ),
+                "NPC_NONCOMPETING_GOAL_MODE": getattr(
+                    config, "NPC_NONCOMPETING_GOAL_MODE", None
+                ),
+                "NPC_NPC_INTERACTION_ENABLED": getattr(
+                    config, "NPC_NPC_INTERACTION_ENABLED", None
+                ),
                 "NPC_RESPONSE_MODE": getattr(config, "NPC_RESPONSE_MODE", None),
                 "NPC_ENFORCE_GROUNDING": getattr(config, "NPC_ENFORCE_GROUNDING", None),
                 "NPC_LLM_MAX_TOOL_TURNS": getattr(config, "NPC_LLM_MAX_TOOL_TURNS", None),
@@ -457,16 +600,8 @@ class GameLogger:
                     for y in range(world.size)
                 },
             },
-            "npc": {
-                "start": [npc.x, npc.y],
-                "sight_range": npc.sight_range,
-                "brain_type": type(brain).__name__,
-                "goal_label": getattr(npc, "goal_label", None),
-                "goal_natural_name": (
-                    self._natural_object_name(npc.goal_label)
-                    if getattr(npc, "goal_label", None) else None
-                ),
-            },
+            "npc": dict(npc_payloads[0]),
+            "npcs": npc_payloads,
             "player": {
                 "start": [player.x, player.y],
                 "sight_range": player.sight_range,
@@ -509,11 +644,33 @@ class GameLogger:
         """Compact JSON snapshot of what the NPC currently knows."""
         return {
             "coverage": round(brain.state.coverage, 4),
+            "direct_coverage": round(getattr(brain.state, "direct_coverage", brain.state.coverage), 4),
             "observed_cells_count": len(brain.state.observed_cells),
+            "direct_observed_cells_count": len(getattr(brain.state, "direct_observed_cells", brain.state.observed_cells)),
+            "learned_observed_cells_count": len(getattr(brain.state, "learned_observed_cells", set())),
             "explored_regions": dict(brain.state.explored_regions),
             "shape_locations": {
                 label: [[int(x), int(y)] for x, y in positions]
                 for label, positions in brain.state.shape_locations.items()
+            },
+            "shape_sources": {
+                f"{int(x)},{int(y)}": {
+                    "kind": kind,
+                    "npc_ids": list(npc_ids),
+                }
+                for (x, y), (kind, npc_ids) in getattr(
+                    brain.state, "observed_shape_sources", {}
+                ).items()
+            },
+            "known_npc_goals": {
+                npc_id: {
+                    "goal_label": goal_label,
+                    "kind": kind,
+                    "npc_ids": list(source_npc_ids),
+                }
+                for npc_id, (goal_label, kind, source_npc_ids) in getattr(
+                    brain.state, "known_npc_goals", {}
+                ).items()
             },
             "context_lines": brain.state.to_llm_context(),
         }

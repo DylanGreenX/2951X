@@ -1,0 +1,465 @@
+{
+  "benchmark": "v2",
+  "created_at": "2026-04-30T00:35:44.200921+00:00",
+  "num_trials": 50,
+  "base_seed": 20260429,
+  "use_judge": false,
+  "conditions": [
+    {
+      "name": "v2 single 15 perfect deterministic",
+      "scope": "single",
+      "npc_count": 1,
+      "knowledge_mode": "perfect",
+      "response_mode": "deterministic",
+      "grid_size": 15,
+      "competitor_mode": "none"
+    },
+    {
+      "name": "v2 single 15 perfect llm",
+      "scope": "single",
+      "npc_count": 1,
+      "knowledge_mode": "perfect",
+      "response_mode": "llm",
+      "grid_size": 15,
+      "competitor_mode": "none"
+    },
+    {
+      "name": "v2 single 15 perfect slm",
+      "scope": "single",
+      "npc_count": 1,
+      "knowledge_mode": "perfect",
+      "response_mode": "slm",
+      "grid_size": 15,
+      "competitor_mode": "none"
+    },
+    {
+      "name": "v2 single 15 embodied deterministic",
+      "scope": "single",
+      "npc_count": 1,
+      "knowledge_mode": "embodied",
+      "response_mode": "deterministic",
+      "grid_size": 15,
+      "competitor_mode": "none"
+    },
+    {
+      "name": "v2 single 15 embodied llm",
+      "scope": "single",
+      "npc_count": 1,
+      "knowledge_mode": "embodied",
+      "response_mode": "llm",
+      "grid_size": 15,
+      "competitor_mode": "none"
+    },
+    {
+      "name": "v2 single 15 embodied slm",
+      "scope": "single",
+      "npc_count": 1,
+      "knowledge_mode": "embodied",
+      "response_mode": "slm",
+      "grid_size": 15,
+      "competitor_mode": "none"
+    },
+    {
+      "name": "v2 party2 15 embodied deterministic none",
+      "scope": "party",
+      "npc_count": 2,
+      "knowledge_mode": "embodied",
+      "response_mode": "deterministic",
+      "grid_size": 15,
+      "competitor_mode": "none"
+    },
+    {
+      "name": "v2 party2 15 embodied llm none",
+      "scope": "party",
+      "npc_count": 2,
+      "knowledge_mode": "embodied",
+      "response_mode": "llm",
+      "grid_size": 15,
+      "competitor_mode": "none"
+    },
+    {
+      "name": "v2 party2 15 embodied slm none",
+      "scope": "party",
+      "npc_count": 2,
+      "knowledge_mode": "embodied",
+      "response_mode": "slm",
+      "grid_size": 15,
+      "competitor_mode": "none"
+    },
+    {
+      "name": "v2 party2 15 embodied llm competitor-one",
+      "scope": "party",
+      "npc_count": 2,
+      "knowledge_mode": "embodied",
+      "response_mode": "llm",
+      "grid_size": 15,
+      "competitor_mode": "one"
+    },
+    {
+      "name": "v2 party2 15 embodied slm competitor-one",
+      "scope": "party",
+      "npc_count": 2,
+      "knowledge_mode": "embodied",
+      "response_mode": "slm",
+      "grid_size": 15,
+      "competitor_mode": "one"
+    },
+    {
+      "name": "v2 party2 15 embodied llm competitor-all",
+      "scope": "party",
+      "npc_count": 2,
+      "knowledge_mode": "embodied",
+      "response_mode": "llm",
+      "grid_size": 15,
+      "competitor_mode": "all"
+    },
+    {
+      "name": "v2 party2 15 embodied slm competitor-all",
+      "scope": "party",
+      "npc_count": 2,
+      "knowledge_mode": "embodied",
+      "response_mode": "slm",
+      "grid_size": 15,
+      "competitor_mode": "all"
+    },
+    {
+      "name": "v2 party4 15 embodied deterministic none",
+      "scope": "party",
+      "npc_count": 4,
+      "knowledge_mode": "embodied",
+      "response_mode": "deterministic",
+      "grid_size": 15,
+      "competitor_mode": "none"
+    },
+    {
+      "name": "v2 party4 15 embodied llm none",
+      "scope": "party",
+      "npc_count": 4,
+      "knowledge_mode": "embodied",
+      "response_mode": "llm",
+      "grid_size": 15,
+      "competitor_mode": "none"
+    },
+    {
+      "name": "v2 party4 15 embodied slm none",
+      "scope": "party",
+      "npc_count": 4,
+      "knowledge_mode": "embodied",
+      "response_mode": "slm",
+      "grid_size": 15,
+      "competitor_mode": "none"
+    },
+    {
+      "name": "v2 party4 15 embodied llm competitor-one",
+      "scope": "party",
+      "npc_count": 4,
+      "knowledge_mode": "embodied",
+      "response_mode": "llm",
+      "grid_size": 15,
+      "competitor_mode": "one"
+    },
+    {
+      "name": "v2 party4 15 embodied slm competitor-one",
+      "scope": "party",
+      "npc_count": 4,
+      "knowledge_mode": "embodied",
+      "response_mode": "slm",
+      "grid_size": 15,
+      "competitor_mode": "one"
+    },
+    {
+      "name": "v2 party4 15 embodied llm competitor-all",
+      "scope": "party",
+      "npc_count": 4,
+      "knowledge_mode": "embodied",
+      "response_mode": "llm",
+      "grid_size": 15,
+      "competitor_mode": "all"
+    },
+    {
+      "name": "v2 party4 15 embodied slm competitor-all",
+      "scope": "party",
+      "npc_count": 4,
+      "knowledge_mode": "embodied",
+      "response_mode": "slm",
+      "grid_size": 15,
+      "competitor_mode": "all"
+    },
+    {
+      "name": "v2 single 40 perfect deterministic",
+      "scope": "single",
+      "npc_count": 1,
+      "knowledge_mode": "perfect",
+      "response_mode": "deterministic",
+      "grid_size": 40,
+      "competitor_mode": "none"
+    },
+    {
+      "name": "v2 single 40 perfect llm",
+      "scope": "single",
+      "npc_count": 1,
+      "knowledge_mode": "perfect",
+      "response_mode": "llm",
+      "grid_size": 40,
+      "competitor_mode": "none"
+    },
+    {
+      "name": "v2 single 40 perfect slm",
+      "scope": "single",
+      "npc_count": 1,
+      "knowledge_mode": "perfect",
+      "response_mode": "slm",
+      "grid_size": 40,
+      "competitor_mode": "none"
+    },
+    {
+      "name": "v2 single 40 embodied deterministic",
+      "scope": "single",
+      "npc_count": 1,
+      "knowledge_mode": "embodied",
+      "response_mode": "deterministic",
+      "grid_size": 40,
+      "competitor_mode": "none"
+    },
+    {
+      "name": "v2 single 40 embodied llm",
+      "scope": "single",
+      "npc_count": 1,
+      "knowledge_mode": "embodied",
+      "response_mode": "llm",
+      "grid_size": 40,
+      "competitor_mode": "none"
+    },
+    {
+      "name": "v2 single 40 embodied slm",
+      "scope": "single",
+      "npc_count": 1,
+      "knowledge_mode": "embodied",
+      "response_mode": "slm",
+      "grid_size": 40,
+      "competitor_mode": "none"
+    },
+    {
+      "name": "v2 party2 40 embodied deterministic none",
+      "scope": "party",
+      "npc_count": 2,
+      "knowledge_mode": "embodied",
+      "response_mode": "deterministic",
+      "grid_size": 40,
+      "competitor_mode": "none"
+    },
+    {
+      "name": "v2 party2 40 embodied llm none",
+      "scope": "party",
+      "npc_count": 2,
+      "knowledge_mode": "embodied",
+      "response_mode": "llm",
+      "grid_size": 40,
+      "competitor_mode": "none"
+    },
+    {
+      "name": "v2 party2 40 embodied slm none",
+      "scope": "party",
+      "npc_count": 2,
+      "knowledge_mode": "embodied",
+      "response_mode": "slm",
+      "grid_size": 40,
+      "competitor_mode": "none"
+    },
+    {
+      "name": "v2 party2 40 embodied llm competitor-one",
+      "scope": "party",
+      "npc_count": 2,
+      "knowledge_mode": "embodied",
+      "response_mode": "llm",
+      "grid_size": 40,
+      "competitor_mode": "one"
+    },
+    {
+      "name": "v2 party2 40 embodied slm competitor-one",
+      "scope": "party",
+      "npc_count": 2,
+      "knowledge_mode": "embodied",
+      "response_mode": "slm",
+      "grid_size": 40,
+      "competitor_mode": "one"
+    },
+    {
+      "name": "v2 party2 40 embodied llm competitor-all",
+      "scope": "party",
+      "npc_count": 2,
+      "knowledge_mode": "embodied",
+      "response_mode": "llm",
+      "grid_size": 40,
+      "competitor_mode": "all"
+    },
+    {
+      "name": "v2 party2 40 embodied slm competitor-all",
+      "scope": "party",
+      "npc_count": 2,
+      "knowledge_mode": "embodied",
+      "response_mode": "slm",
+      "grid_size": 40,
+      "competitor_mode": "all"
+    },
+    {
+      "name": "v2 party4 40 embodied deterministic none",
+      "scope": "party",
+      "npc_count": 4,
+      "knowledge_mode": "embodied",
+      "response_mode": "deterministic",
+      "grid_size": 40,
+      "competitor_mode": "none"
+    },
+    {
+      "name": "v2 party4 40 embodied llm none",
+      "scope": "party",
+      "npc_count": 4,
+      "knowledge_mode": "embodied",
+      "response_mode": "llm",
+      "grid_size": 40,
+      "competitor_mode": "none"
+    },
+    {
+      "name": "v2 party4 40 embodied slm none",
+      "scope": "party",
+      "npc_count": 4,
+      "knowledge_mode": "embodied",
+      "response_mode": "slm",
+      "grid_size": 40,
+      "competitor_mode": "none"
+    },
+    {
+      "name": "v2 party4 40 embodied llm competitor-one",
+      "scope": "party",
+      "npc_count": 4,
+      "knowledge_mode": "embodied",
+      "response_mode": "llm",
+      "grid_size": 40,
+      "competitor_mode": "one"
+    },
+    {
+      "name": "v2 party4 40 embodied slm competitor-one",
+      "scope": "party",
+      "npc_count": 4,
+      "knowledge_mode": "embodied",
+      "response_mode": "slm",
+      "grid_size": 40,
+      "competitor_mode": "one"
+    },
+    {
+      "name": "v2 party4 40 embodied llm competitor-all",
+      "scope": "party",
+      "npc_count": 4,
+      "knowledge_mode": "embodied",
+      "response_mode": "llm",
+      "grid_size": 40,
+      "competitor_mode": "all"
+    },
+    {
+      "name": "v2 party4 40 embodied slm competitor-all",
+      "scope": "party",
+      "npc_count": 4,
+      "knowledge_mode": "embodied",
+      "response_mode": "slm",
+      "grid_size": 40,
+      "competitor_mode": "all"
+    }
+  ],
+  "config_defaults": {
+    "GRID_SIZE": 40,
+    "NUM_OBJECTS": 15,
+    "RANDOM_SPAWN": true,
+    "NPC_COUNT": 4,
+    "NPC_SIGHT_RANGE": 8,
+    "NPC_EXPLORATION_TICKS": 40,
+    "PLAYER_SIGHT_RANGE": 20,
+    "NPC_SLM_MODEL_ID": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+    "NPC_SLM_ENABLE_TOOL_CALLS": true,
+    "NPC_SLM_USE_CHAT_TEMPLATE": true,
+    "NPC_SLM_INCLUDE_COORDS": true,
+    "NPC_SLM_TOOL_WHITELIST": [
+      "set_npc_target"
+    ],
+    "NPC_SLM_REGION_GROUNDING": false,
+    "NPC_USE_LLM_JUDGE": false,
+    "NPC_JUDGE_MODEL": "gemini-2.5-pro",
+    "DEFAULT_GEMINI_MODEL": "gemini-2.5-flash"
+  },
+  "effective_benchmark_settings": {
+    "grid_sizes": [
+      15,
+      40
+    ],
+    "party_sizes": [
+      2,
+      4
+    ],
+    "response_modes": [
+      "deterministic",
+      "llm",
+      "slm"
+    ],
+    "num_trials": 50,
+    "npc_sight_range": 1,
+    "player_sight_range": 2,
+    "target_color": "red",
+    "target_shape": "triangle",
+    "npc_goal_enabled": true,
+    "npc_goal_deterministic": true,
+    "npc_goal_color": "blue",
+    "npc_goal_shape": "circle",
+    "multiple_knowledge_mode": "independent",
+    "noncompeting_goal_mode": "shared",
+    "npc_interaction_enabled": true,
+    "memory_decay_ticks": null,
+    "selective_attention": null,
+    "slm_region_grounding": false,
+    "random_spawn": true,
+    "reserved_object_positions": "stable benchmark anchors"
+  },
+  "exploration_ticks_by_grid_and_npc_count": [
+    {
+      "grid_size": 15,
+      "npc_count": 1,
+      "ticks": 70
+    },
+    {
+      "grid_size": 15,
+      "npc_count": 2,
+      "ticks": 40
+    },
+    {
+      "grid_size": 15,
+      "npc_count": 4,
+      "ticks": 12
+    },
+    {
+      "grid_size": 40,
+      "npc_count": 1,
+      "ticks": 1500
+    },
+    {
+      "grid_size": 40,
+      "npc_count": 2,
+      "ticks": 450
+    },
+    {
+      "grid_size": 40,
+      "npc_count": 4,
+      "ticks": 240
+    }
+  ],
+  "git": {
+    "commit": "4d0921b27f272322071baeaceeaa4dfeaeae3086",
+    "branch": "npc_party",
+    "status_short": "MM config.py\nMM experiment.py\n M game_api_interface.py\nM  game_log.py\n M interaction.py\n M llm.py\nMM main.py\nM  npc_brain.py\n M pygame_game_api.py\nM  replay.py\nM  rlang_engine.py\n M world.py\n?? benchmarkv2/\n?? npc_party.py\n?? tests/"
+  },
+  "notes": {
+    "slm_region_grounding": "disabled for raw SLM behavior",
+    "memory_decay": "not included in v2 matrix",
+    "selective_attention": "not included in v2 matrix",
+    "party_knowledge": "independent only; NPCs can exchange memory locally",
+    "reserved_positions": "target/object layout reserves stable anchors so paired seeds keep shape placement comparable across NPC counts"
+  }
+}

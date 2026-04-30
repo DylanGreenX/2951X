@@ -95,7 +95,7 @@ class InteractionManager:
         self._reset_trace()
         label = f"{target_color}_{target_shape}"
         natural_name = get_natural_object_name(label)
-        question = f"Please show me where the {natural_name} is."
+        question = f"Where is the {natural_name}?"
 
         if config.NPC_RESPONSE_MODE == "deterministic":
             response = self.get_deterministic_response(brain, target_color, target_shape)
@@ -269,14 +269,13 @@ class InteractionManager:
                 "Never fabricate or guess at locations you have not visited. "
                 "Use the get_npc_memory tool to consult your observations and "
                 "get_exploration_status to acknowledge the limits of what you know. "
-                "When you know where the item is, use set_npc_target to walk there "
-                "rather than just describing the spot."
+                "When you know where the item is, answer with the location you know."
             )
         else:
             knowledge_instruction = (
                 "You have complete knowledge of this region. "
                 "Use the get_all_objects tool to locate any item with certainty, "
-                "then set_npc_target to walk there."
+                "then answer with the location."
             )
 
         if is_competitive:
@@ -295,8 +294,8 @@ class InteractionManager:
             f"The traveler is asking about the {target_natural_name}.\n"
             f"Your NPC identifier is {npc_id!r}. Use it when calling NPC-specific tools.\n"
             "Respond in 1–2 sentences, in character. "
-            "If the traveler asks you to show where something is, call set_npc_target "
-            "to navigate there. Do not ask for confirmation or follow-up."
+            "Do not say you will lead, guide, or be followed; just answer the location "
+            "or state that you have not seen it."
         )
 
     def _build_messages(
@@ -340,7 +339,7 @@ class InteractionManager:
 
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_content},
-            {"role": "user",   "content": f"Please show me where the {natural_name} is."},
+            {"role": "user",   "content": f"Where is the {natural_name}?"},
         ]
         return messages, tools
 
@@ -521,7 +520,7 @@ class InteractionManager:
             x = pos.get("x"); y = pos.get("y")
             return (
                 "STATUS: set_npc_target has already succeeded "
-                f"(the NPC is now heading to x={x}, y={y}). "
+                f"(target coordinate x={x}, y={y} was recorded). "
                 "DO NOT call any tool this turn. Your ONLY valid reply is a "
                 'JSON object of the form {"final": "<one short in-character '
                 'sentence naming the region>"}.\n\n'
@@ -1245,6 +1244,7 @@ class InteractionManager:
             '  final : {"final": "<one short in-character sentence, MAX 25 WORDS>"}\n\n'
             "Guidance:\n"
             "- Keep the final string to ONE sentence. Do NOT dump memory.\n"
+            "- Do NOT say you will lead, guide, escort, or be followed.\n"
             "- Decision rule:\n"
             "    (a) If the Known facts contain a line starting with\n"
             "        'Target coordinate for set_npc_target: <name> is at (x=X, y=Y)',\n"

@@ -1,0 +1,11 @@
+condition,trial,response_mode,response_time_ms,llm_error,speaker_outcome_bucket,response_text
+v2 single 15 perfect slm,4,slm,596037.1,,confabulation,"I'm currently in the sheep pastures, and the crimson flag is at (x=10, y=5)."
+v2 party4 15 embodied slm none,16,slm,55153.2,,hallucination,I've found the crimson flag in the deep swamp.
+v2 single 15 perfect slm,1,slm,55080.4,,correct,"I'm currently in the sheep pastures, but I've explored 100% of this region during my travels. I know there is a crimson flag in the city walls."
+v2 party2 40 embodied slm competitor-all,0,slm,54750.9,,correct,"I have not seen the crimson flag yet, but I have explored the merchant quarter and found several sapphire, amethyst, golden, and emerald gems. I have also found a crimson gem in the north swamp edge. I will continue my search in the merchant quarter and the merchant quarter's surroundings."
+v2 party4 15 embodied slm competitor-one,0,slm,54148.0,,off_topic,"I've heard rumors of a crimson gem hidden deep within the volcanic crater, but I haven't had the chance to explore it yet."
+v2 single 15 perfect slm,46,slm,52155.4,,confabulation,"I'm currently in the sheep pastures, and the crimson flag is at (x=5, y=1)."
+v2 party2 15 embodied slm none,0,slm,49761.8,,hallucination,"I have not seen the crimson flag in the merchant quarter. However, I have heard rumors of it being hidden in the volcanic crater."
+v2 party4 40 embodied slm competitor-all,0,slm,41650.2,,hallucination,"I've been searching for the crimson flag in the merchant quarter, but it seems to be elusive. I've found some amethyst gems and a sapphire rune stone there, but I haven't seen the flag yet."
+v2 single 15 perfect slm,49,slm,39603.7,,correct,"I've found the crimson flag at the ancient stone circle, located at (x=11, y=7)."
+v2 party2 40 embodied slm none,0,slm,35402.7,,confabulation,"I have not seen the crimson flag in the merchant quarter. However, I have found it at (x=1, y=27) in the north swamp edge."

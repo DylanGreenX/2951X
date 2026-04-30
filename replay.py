@@ -19,6 +19,7 @@ Controls:
     UP / DOWN                    increase / decrease playback speed
     N                            jump to next interaction
     B                            jump to previous interaction
+    TAB                          cycle focused NPC
     1 / 2 / 3                    toggle NPC shading / player shading / sight cones
     I                            toggle interaction detail panel
     ESC                          quit
@@ -73,6 +74,13 @@ NPC_EXPLORED_TINT = (255, 200, 50, 35)
 PLAYER_EXPLORED_TINT = (120, 170, 255, 55)
 NPC_SIGHT_TINT = (255, 200, 50, 70)
 PLAYER_SIGHT_TINT = (200, 220, 255, 100)
+NPC_COLORS = [
+    NPC_COLOR,
+    (255, 140, 90),
+    (120, 220, 180),
+    (180, 160, 255),
+    (255, 230, 120),
+]
 
 
 # ── Data model ────────────────────────────────────────────────────────────────
@@ -90,6 +98,16 @@ class Shape:
 
 
 @dataclass
+class NPCMeta:
+    npc_id: str
+    name: str
+    start: tuple[int, int]
+    sight_range: int
+    brain_type: str
+    goal_label: Optional[str]
+
+
+@dataclass
 class RunMeta:
     """Static data extracted from the ``run_start`` event."""
 
@@ -97,6 +115,7 @@ class RunMeta:
     tag: str
     seed: Optional[int]
     grid_size: int
+    npcs: list[NPCMeta]
     npc_start: tuple[int, int]
     npc_sight_range: int
     npc_brain_type: str
@@ -119,6 +138,8 @@ class Interaction:
     interaction_id: int
     tick: int
     frame_index: int
+    npc_id: str
+    npc_name: str
     question: str
     response_raw: str
     response_final: str
@@ -143,6 +164,7 @@ class Frame:
 
     index: int
     tick: int
+    npcs: dict[str, "NPCFrameState"]
     npc_pos: tuple[int, int]
     player_pos: tuple[int, int]
     npc_observed_cells: frozenset[tuple[int, int]]
@@ -152,6 +174,15 @@ class Frame:
     npc_steps: int
     event_msg: Optional[str] = None
     interaction: Optional[Interaction] = None
+
+
+@dataclass
+class NPCFrameState:
+    pos: tuple[int, int]
+    observed_cells: frozenset[tuple[int, int]]
+    shapes_seen: frozenset[tuple[str, int, int]]
+    coverage: float
+    steps_taken: int
 
 
 # ── Log loading ───────────────────────────────────────────────────────────────
@@ -186,6 +217,7 @@ def _read_events(path: Path) -> list[dict[str, Any]]:
 def _parse_run_start(event: dict[str, Any]) -> RunMeta:
     world = event.get("world", {})
     npc = event.get("npc", {})
+    npc_list = event.get("npcs") or [npc]
     player = event.get("player", {})
     shapes = [
         Shape(
@@ -200,15 +232,28 @@ def _parse_run_start(event: dict[str, Any]) -> RunMeta:
         for s in world.get("shapes", [])
     ]
     target_position = world.get("target_position")
+    npcs = [
+        NPCMeta(
+            npc_id=item.get("npc_id", f"npc_{index}"),
+            name=item.get("name", f"NPC {index + 1}"),
+            start=_as_tuple(item.get("start", [0, 0])),
+            sight_range=int(item.get("sight_range", 1)),
+            brain_type=item.get("brain_type", ""),
+            goal_label=item.get("goal_label"),
+        )
+        for index, item in enumerate(npc_list)
+    ]
+    primary_npc = npcs[0]
     return RunMeta(
         run_id=event.get("run_id", "unknown"),
         tag=event.get("tag", ""),
         seed=event.get("seed"),
         grid_size=int(world.get("size", 15)),
-        npc_start=_as_tuple(npc.get("start", [0, 0])),
-        npc_sight_range=int(npc.get("sight_range", 1)),
-        npc_brain_type=npc.get("brain_type", ""),
-        npc_goal_label=npc.get("goal_label"),
+        npcs=npcs,
+        npc_start=primary_npc.start,
+        npc_sight_range=primary_npc.sight_range,
+        npc_brain_type=primary_npc.brain_type,
+        npc_goal_label=primary_npc.goal_label,
         player_start=_as_tuple(player.get("start", [0, 0])),
         player_sight_range=int(player.get("sight_range", 2)),
         target_label=world.get("target_label", ""),
@@ -233,6 +278,8 @@ def _parse_interaction(event: dict[str, Any], frame_index: int) -> Interaction:
         interaction_id=int(event.get("interaction_id", -1)),
         tick=int(event.get("tick", -1)),
         frame_index=frame_index,
+        npc_id=event.get("npc_id", "npc_0"),
+        npc_name=event.get("npc_name", "NPC 1"),
         question=event.get("question", ""),
         response_raw=resp.get("raw", ""),
         response_final=resp.get("final", ""),
@@ -263,94 +310,122 @@ def build_frames(events: list[dict[str, Any]]) -> tuple[RunMeta, list[Frame], li
 
     meta = _parse_run_start(events[0])
 
-    # Seed state with starting positions and initial sight cones. The first
-    # ``tick`` event generally already contains the NPC's opening observation
-    # batch, but we seed the player's sight cone here so frame 0 shows it.
-    npc_pos = meta.npc_start
+    primary_npc_id = meta.npcs[0].npc_id
     player_pos = meta.player_start
-    npc_observed: set[tuple[int, int]] = set()
     player_observed: set[tuple[int, int]] = _sight_cone(
         player_pos[0], player_pos[1], meta.player_sight_range, meta.grid_size
     )
-    npc_shapes: set[tuple[str, int, int]] = set()
-    npc_coverage = 0.0
-    npc_steps = 0
+    npc_state: dict[str, dict[str, Any]] = {
+        npc.npc_id: {
+            "pos": npc.start,
+            "observed_cells": set(),
+            "shapes_seen": set(),
+            "coverage": 0.0,
+            "steps_taken": 0,
+        }
+        for npc in meta.npcs
+    }
 
     frames: list[Frame] = []
     interactions: list[Interaction] = []
 
-    # Synthetic frame 0 — state at game start, before any tick fired.
-    frames.append(
-        Frame(
-            index=0,
-            tick=0,
-            npc_pos=npc_pos,
+    def _make_frame(
+        *,
+        tick: int,
+        event_msg: Optional[str] = None,
+        interaction: Optional[Interaction] = None,
+    ) -> Frame:
+        npcs = {
+            npc_id: NPCFrameState(
+                pos=data["pos"],
+                observed_cells=frozenset(data["observed_cells"]),
+                shapes_seen=frozenset(data["shapes_seen"]),
+                coverage=float(data["coverage"]),
+                steps_taken=int(data["steps_taken"]),
+            )
+            for npc_id, data in npc_state.items()
+        }
+        primary = npcs[primary_npc_id]
+        return Frame(
+            index=len(frames),
+            tick=tick,
+            npcs=npcs,
+            npc_pos=primary.pos,
             player_pos=player_pos,
-            npc_observed_cells=frozenset(npc_observed),
+            npc_observed_cells=primary.observed_cells,
             player_observed_cells=frozenset(player_observed),
-            npc_shapes_seen=frozenset(npc_shapes),
-            npc_coverage=0.0,
-            npc_steps=0,
+            npc_shapes_seen=primary.shapes_seen,
+            npc_coverage=primary.coverage,
+            npc_steps=primary.steps_taken,
+            event_msg=event_msg,
+            interaction=interaction,
         )
-    )
+
+    frames.append(_make_frame(tick=0))
 
     for ev in events[1:]:
         etype = ev.get("event")
         if etype == "tick":
             tick_num = int(ev.get("tick", len(frames)))
-            if (pos := ev.get("npc_pos")) is not None:
-                npc_pos = _as_tuple(pos)
             if (pos := ev.get("player_pos")) is not None:
                 player_pos = _as_tuple(pos)
                 player_observed |= _sight_cone(
                     player_pos[0], player_pos[1], meta.player_sight_range, meta.grid_size
                 )
-            for cell in ev.get("npc_new_observed_cells", []) or []:
-                npc_observed.add(_as_tuple(cell))
             for cell in ev.get("player_new_observed_cells", []) or []:
                 player_observed.add(_as_tuple(cell))
-            for sh in ev.get("npc_new_observed_shapes", []) or []:
-                pos = sh.get("position") or (0, 0)
-                npc_shapes.add((sh.get("label", ""), int(pos[0]), int(pos[1])))
-            if (cov := ev.get("npc_coverage")) is not None:
-                npc_coverage = float(cov)
-            if (steps := ev.get("npc_steps")) is not None:
-                npc_steps = int(steps)
-            event_msg = ev.get("event_msg")
+            if (npc_deltas := ev.get("npcs")):
+                for npc_id, delta in npc_deltas.items():
+                    live = npc_state.setdefault(
+                        npc_id,
+                        {
+                            "pos": (0, 0),
+                            "observed_cells": set(),
+                            "shapes_seen": set(),
+                            "coverage": 0.0,
+                            "steps_taken": 0,
+                        },
+                    )
+                    if (pos := delta.get("pos")) is not None:
+                        live["pos"] = _as_tuple(pos)
+                    for cell in delta.get("new_observed_cells", []) or []:
+                        live["observed_cells"].add(_as_tuple(cell))
+                    for sh in delta.get("new_observed_shapes", []) or []:
+                        pos = sh.get("position") or (0, 0)
+                        live["shapes_seen"].add((sh.get("label", ""), int(pos[0]), int(pos[1])))
+                    if (cov := delta.get("coverage")) is not None:
+                        live["coverage"] = float(cov)
+                    if (steps := delta.get("steps_taken")) is not None:
+                        live["steps_taken"] = int(steps)
+            else:
+                live = npc_state[primary_npc_id]
+                if (pos := ev.get("npc_pos")) is not None:
+                    live["pos"] = _as_tuple(pos)
+                for cell in ev.get("npc_new_observed_cells", []) or []:
+                    live["observed_cells"].add(_as_tuple(cell))
+                for sh in ev.get("npc_new_observed_shapes", []) or []:
+                    pos = sh.get("position") or (0, 0)
+                    live["shapes_seen"].add((sh.get("label", ""), int(pos[0]), int(pos[1])))
+                if (cov := ev.get("npc_coverage")) is not None:
+                    live["coverage"] = float(cov)
+                if (steps := ev.get("npc_steps")) is not None:
+                    live["steps_taken"] = int(steps)
 
-            frames.append(
-                Frame(
-                    index=len(frames),
-                    tick=tick_num,
-                    npc_pos=npc_pos,
-                    player_pos=player_pos,
-                    npc_observed_cells=frozenset(npc_observed),
-                    player_observed_cells=frozenset(player_observed),
-                    npc_shapes_seen=frozenset(npc_shapes),
-                    npc_coverage=npc_coverage,
-                    npc_steps=npc_steps,
-                    event_msg=event_msg,
-                )
-            )
+            event_msg = ev.get("event_msg")
+            if not event_msg and (event_msgs := ev.get("event_msgs")):
+                parts = []
+                for msg in event_msgs:
+                    speaker = msg.get("display_name") or msg.get("npc_name") or msg.get("npc_id") or "NPC"
+                    text = msg.get("message", "")
+                    parts.append(f"{speaker}: {text}" if text else speaker)
+                event_msg = " | ".join(parts)
+
+            frames.append(_make_frame(tick=tick_num, event_msg=event_msg))
 
         elif etype == "interaction_summary":
-            # Emit a dedicated frame so the timeline stops on the interaction.
             interaction = _parse_interaction(ev, frame_index=len(frames))
             interactions.append(interaction)
-            frames.append(
-                Frame(
-                    index=len(frames),
-                    tick=int(ev.get("tick", frames[-1].tick)),
-                    npc_pos=npc_pos,
-                    player_pos=player_pos,
-                    npc_observed_cells=frozenset(npc_observed),
-                    player_observed_cells=frozenset(player_observed),
-                    npc_shapes_seen=frozenset(npc_shapes),
-                    npc_coverage=npc_coverage,
-                    npc_steps=npc_steps,
-                    interaction=interaction,
-                )
-            )
+            frames.append(_make_frame(tick=int(ev.get("tick", frames[-1].tick)), interaction=interaction))
         # All other event types (model_request, tool_call, run_end, ...) are
         # captured in the interaction_summary payload already; they do not
         # drive new frames.
@@ -374,6 +449,7 @@ LAYOUT = {
 @dataclass
 class ViewState:
     frame_index: int = 0
+    focus_npc_id: str = "npc_0"
     playing: bool = False
     speed_ticks_per_sec: float = 4.0
     last_advance_ms: int = 0
@@ -394,16 +470,45 @@ def _window_size(meta: RunMeta) -> tuple[int, int]:
     return w, h
 
 
+def _npc_color(npc_id: str) -> tuple[int, int, int]:
+    try:
+        index = int(npc_id.split("_")[-1])
+    except (ValueError, IndexError):
+        index = 0
+    return NPC_COLORS[index % len(NPC_COLORS)]
+
+
+def _focus_npc(meta: RunMeta, view: ViewState) -> NPCMeta:
+    for npc in meta.npcs:
+        if npc.npc_id == view.focus_npc_id:
+            return npc
+    return meta.npcs[0]
+
+
+def _focus_state(frame: Frame, meta: RunMeta, view: ViewState) -> NPCFrameState:
+    focus = _focus_npc(meta, view)
+    return frame.npcs[focus.npc_id]
+
+
 def _draw_top_bar(screen, fonts, meta: RunMeta, view: ViewState, frames: list[Frame]) -> None:
     bar = pygame.Rect(0, 0, screen.get_width(), LAYOUT["top_bar_h"])
     pygame.draw.rect(screen, (40, 40, 50), bar)
 
     frame = frames[view.frame_index]
+    focus_npc = _focus_npc(meta, view)
+    focus_state = _focus_state(frame, meta, view)
     playing = "▶" if view.playing else "⏸"
+    combined_cells: set[tuple[int, int]] = set()
+    total_steps = 0
+    for state in frame.npcs.values():
+        combined_cells |= set(state.observed_cells)
+        total_steps += state.steps_taken
+    combined_coverage = len(combined_cells) / (meta.grid_size ** 2)
     title = (
         f"{meta.run_id}    {playing} {view.speed_ticks_per_sec:.1f}x    "
         f"frame {view.frame_index}/{len(frames) - 1}    tick {frame.tick}    "
-        f"NPC steps {frame.npc_steps}    coverage {frame.npc_coverage:.0%}"
+        f"focus {focus_npc.name}    steps {focus_state.steps_taken}    "
+        f"combined steps {total_steps}    coverage {focus_state.coverage:.0%} / {combined_coverage:.0%}"
     )
     surf = fonts["big"].render(title, True, TEXT_COLOR)
     screen.blit(surf, (12, 15))
@@ -439,12 +544,14 @@ def _draw_grid(screen, fonts, meta: RunMeta, view: ViewState, frame: Frame) -> N
     cell = LAYOUT["cell_px"]
     ox, oy = _grid_origin()
     grid_px = meta.grid_size * cell
+    focus_npc = _focus_npc(meta, view)
+    focus_state = _focus_state(frame, meta, view)
 
     # Shaded cumulative-observed regions (optional).
     tint = pygame.Surface((cell, cell), pygame.SRCALPHA)
     if view.show_npc_explored:
         tint.fill(NPC_EXPLORED_TINT)
-        for (gx, gy) in frame.npc_observed_cells:
+        for (gx, gy) in focus_state.observed_cells:
             screen.blit(tint, (ox + gx * cell, oy + gy * cell))
     if view.show_player_explored:
         tint.fill(PLAYER_EXPLORED_TINT)
@@ -461,9 +568,9 @@ def _draw_grid(screen, fonts, meta: RunMeta, view: ViewState, frame: Frame) -> N
     # Current sight cones.
     if view.show_sight_cones:
         cone = pygame.Surface((cell, cell), pygame.SRCALPHA)
-        cone.fill(NPC_SIGHT_TINT)
+        cone.fill((*_npc_color(focus_npc.npc_id), NPC_SIGHT_TINT[3]))
         for (gx, gy) in _sight_cone(
-            frame.npc_pos[0], frame.npc_pos[1], meta.npc_sight_range, meta.grid_size
+            focus_state.pos[0], focus_state.pos[1], focus_npc.sight_range, meta.grid_size
         ):
             screen.blit(cone, (ox + gx * cell, oy + gy * cell))
         cone.fill(PLAYER_SIGHT_TINT)
@@ -475,7 +582,7 @@ def _draw_grid(screen, fonts, meta: RunMeta, view: ViewState, frame: Frame) -> N
     # All shapes (full visibility). NPC-observed shapes get a bright outline;
     # unobserved shapes render dimmer so reviewers can tell at a glance what
     # the NPC could actually talk about.
-    observed_shape_keys = {(lbl, x, y) for (lbl, x, y) in frame.npc_shapes_seen}
+    observed_shape_keys = set(focus_state.shapes_seen)
     for s in meta.shapes:
         cx = ox + s.x * cell + cell // 2
         cy = oy + s.y * cell + cell // 2
@@ -501,14 +608,17 @@ def _draw_grid(screen, fonts, meta: RunMeta, view: ViewState, frame: Frame) -> N
             # Bright pink ring so the ground-truth target is unmistakable.
             pygame.draw.circle(screen, TARGET_MARKER_COLOR, (cx, cy), r + 6, 2)
 
-    # NPC (diamond) and player (square) on top.
-    npx = ox + frame.npc_pos[0] * cell + cell // 2
-    npy = oy + frame.npc_pos[1] * cell + cell // 2
-    d = cell // 3
-    pts = [(npx, npy - d), (npx + d, npy), (npx, npy + d), (npx - d, npy)]
-    pygame.draw.polygon(screen, NPC_COLOR, pts)
-    pygame.draw.polygon(screen, (255, 255, 255), pts, 2)
-    screen.blit(fonts["sm"].render("NPC", True, NPC_COLOR), (npx - 12, npy - d - 14))
+    for npc in meta.npcs:
+        state = frame.npcs[npc.npc_id]
+        color = _npc_color(npc.npc_id)
+        npx = ox + state.pos[0] * cell + cell // 2
+        npy = oy + state.pos[1] * cell + cell // 2
+        d = cell // 3
+        pts = [(npx, npy - d), (npx + d, npy), (npx, npy + d), (npx - d, npy)]
+        pygame.draw.polygon(screen, color, pts)
+        pygame.draw.polygon(screen, (255, 255, 255), pts, 2)
+        label = f"N{int(npc.npc_id.split('_')[-1]) + 1}"
+        screen.blit(fonts["sm"].render(label, True, color), (npx - 12, npy - d - 14))
 
     ppx = ox + frame.player_pos[0] * cell + cell // 2
     ppy = oy + frame.player_pos[1] * cell + cell // 2
@@ -545,6 +655,8 @@ def _draw_sidebar(screen, fonts, meta: RunMeta, view: ViewState,
     sidebar_w = LAYOUT["sidebar_w"] - 28
     y = LAYOUT["top_bar_h"] + LAYOUT["timeline_h"] + 10
     frame = frames[view.frame_index]
+    focus_npc = _focus_npc(meta, view)
+    focus_state = _focus_state(frame, meta, view)
 
     # Ground-truth block.
     header = fonts["title"].render("GROUND TRUTH", True, HIGHLIGHT_COLOR)
@@ -557,15 +669,16 @@ def _draw_sidebar(screen, fonts, meta: RunMeta, view: ViewState,
     )
     screen.blit(fonts["body"].render(target_txt, True, TEXT_COLOR), (sidebar_x, y))
     y += 18
-    if meta.npc_goal_label:
-        goal_txt = f"NPC goal: {meta.npc_goal_label} (brain={meta.npc_brain_type})"
+    if focus_npc.goal_label:
+        goal_txt = f"{focus_npc.name} goal: {focus_npc.goal_label} (brain={focus_npc.brain_type})"
     else:
-        goal_txt = f"NPC brain: {meta.npc_brain_type} (no goal)"
+        goal_txt = f"{focus_npc.name} brain: {focus_npc.brain_type} (no goal)"
     screen.blit(fonts["body"].render(goal_txt, True, MUTED_TEXT), (sidebar_x, y))
     y += 18
     cfg = meta.config_snapshot
     mode_txt = (
         f"mode: knowledge={cfg.get('NPC_KNOWLEDGE_MODE')}  "
+        f"sharing={cfg.get('NPC_MULTIPLE_KNOWLEDGE_MODE')}  "
         f"response={cfg.get('NPC_RESPONSE_MODE')}  "
         f"competing={cfg.get('NPC_COMPETING')}"
     )
@@ -574,18 +687,24 @@ def _draw_sidebar(screen, fonts, meta: RunMeta, view: ViewState,
 
     # NPC knowledge at this frame.
     screen.blit(
-        fonts["title"].render("NPC OBSERVATIONS (cumulative)", True, HIGHLIGHT_COLOR),
+        fonts["title"].render(f"{focus_npc.name.upper()} OBSERVATIONS", True, HIGHLIGHT_COLOR),
         (sidebar_x, y),
     )
     y += 22
     npc_facts = [
-        f"coverage: {frame.npc_coverage:.1%}",
-        f"observed cells: {len(frame.npc_observed_cells)}",
-        f"shapes seen: {len(frame.npc_shapes_seen)}",
-        f"NPC @ {frame.npc_pos}   player @ {frame.player_pos}",
+        f"coverage: {focus_state.coverage:.1%}",
+        f"observed cells: {len(focus_state.observed_cells)}",
+        f"shapes seen: {len(focus_state.shapes_seen)}",
+        f"{focus_npc.name} @ {focus_state.pos}   player @ {frame.player_pos}",
     ]
     for line in npc_facts:
         screen.blit(fonts["body"].render(line, True, TEXT_COLOR), (sidebar_x, y))
+        y += 18
+    if len(meta.npcs) > 1:
+        screen.blit(
+            fonts["body"].render("TAB cycles focused NPC", True, MUTED_TEXT),
+            (sidebar_x, y),
+        )
         y += 18
     if frame.event_msg:
         for wrap in _wrap_text(f"> {frame.event_msg}", fonts["body"], sidebar_w):
@@ -647,7 +766,7 @@ def _draw_interaction_detail(screen, fonts, ix: Interaction, meta: RunMeta,
                              x: int, w: int, y: int) -> int:
     """Render the selected interaction in full. Returns the y below it."""
     heading = (
-        f"#{ix.interaction_id} @ tick {ix.tick}   mode={ix.response_mode}"
+        f"#{ix.interaction_id} @ tick {ix.tick}   {ix.npc_name}   mode={ix.response_mode}"
     )
     screen.blit(fonts["body_bold"].render(heading, True, HIGHLIGHT_COLOR), (x, y))
     y += 19
@@ -664,7 +783,7 @@ def _draw_interaction_detail(screen, fonts, ix: Interaction, meta: RunMeta,
         screen.blit(fonts["body"].render(wrap, True, TEXT_COLOR), (x + 24, y))
         y += 16
     y += 2
-    screen.blit(fonts["body_bold"].render("A:", True, NPC_COLOR), (x, y))
+    screen.blit(fonts["body_bold"].render("A:", True, _npc_color(ix.npc_id)), (x, y))
     for wrap in _wrap_text(ix.response_final or ix.response_raw or "(no response)",
                            fonts["body"], w - 24):
         screen.blit(fonts["body"].render(wrap, True, (180, 220, 180)), (x + 24, y))
@@ -726,7 +845,7 @@ def _next_interaction_index(interactions: list[Interaction], current: int,
     return interactions[0].frame_index
 
 
-def _handle_key(event, view: ViewState, frames: list[Frame],
+def _handle_key(event, meta: RunMeta, view: ViewState, frames: list[Frame],
                 interactions: list[Interaction]) -> bool:
     """Return False when the key requested a quit."""
     key = event.key
@@ -766,6 +885,13 @@ def _handle_key(event, view: ViewState, frames: list[Frame],
         if prv is not None:
             view.frame_index = prv
             view.playing = False
+    elif key == pygame.K_TAB and meta.npcs:
+        ids = [npc.npc_id for npc in meta.npcs]
+        if view.focus_npc_id not in ids:
+            view.focus_npc_id = ids[0]
+        else:
+            index = ids.index(view.focus_npc_id)
+            view.focus_npc_id = ids[(index + 1) % len(ids)]
     elif key == pygame.K_1:
         view.show_npc_explored = not view.show_npc_explored
     elif key == pygame.K_2:
@@ -807,7 +933,7 @@ def run(log_path: Path) -> None:
         "big":        pygame.font.SysFont("consolas", 16, bold=True),
     }
 
-    view = ViewState()
+    view = ViewState(focus_npc_id=meta.npcs[0].npc_id)
     running = True
 
     while running:
@@ -817,7 +943,7 @@ def run(log_path: Path) -> None:
             if event.type == pygame.QUIT:
                 running = False
             elif event.type == pygame.KEYDOWN:
-                if not _handle_key(event, view, frames, interactions):
+                if not _handle_key(event, meta, view, frames, interactions):
                     running = False
 
         if view.playing and view.frame_index < len(frames) - 1:

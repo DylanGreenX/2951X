@@ -28,9 +28,17 @@ class GameWorld:
         """
         occupied = set()
 
-        # Reserve NPC and player starts
-        occupied.add(config.NPC_START)
-        occupied.add(config.PLAYER_START)
+        # Reserve actor/player starts by default. Benchmarks can provide a
+        # broader stable set so paired seeds keep object placement comparable
+        # even when the actual number of NPC starts changes.
+        reserved_positions = getattr(config, "WORLD_RESERVED_POSITIONS", None)
+        if reserved_positions is None:
+            reserved_positions = [
+                *(getattr(config, "NPC_STARTS", None) or [config.NPC_START]),
+                config.PLAYER_START,
+            ]
+        for start in reserved_positions:
+            occupied.add(tuple(start))
 
         use_fixed = not getattr(config, "RANDOM_SPAWN", True)
         fixed = getattr(config, "FIXED_SHAPE_POSITIONS", {}) if use_fixed else {}

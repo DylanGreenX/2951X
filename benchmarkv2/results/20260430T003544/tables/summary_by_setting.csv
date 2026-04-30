@@ -1,0 +1,17 @@
+setting_label,grid_size,scope,npc_count,knowledge_mode,competitor_mode,n,speaker_available,party_available,speaker_direct_coverage,party_direct_coverage,party_knowledge_coverage
+g15 party n2 embodied comp-all,15,party,2,embodied,all,100,0.3,0.54,0.3173333333333333,0.5565333333333333,0.5565333333333333
+g15 party n2 embodied,15,party,2,embodied,none,150,0.38,0.5,0.31671111111111105,0.5663111111111111,0.5663111111111111
+g15 party n2 embodied comp-one,15,party,2,embodied,one,100,0.36,0.56,0.31466666666666665,0.5552888888888888,0.5552888888888888
+g15 party n4 embodied comp-all,15,party,4,embodied,all,100,0.12,0.52,0.12097777777777774,0.4980444444444444,0.4980444444444444
+g15 party n4 embodied,15,party,4,embodied,none,150,0.12,0.48,0.12488888888888884,0.4980444444444444,0.4980444444444444
+g15 party n4 embodied comp-one,15,party,4,embodied,one,100,0.1,0.46,0.12479999999999995,0.4976888888888889,0.4976888888888889
+g15 single n1 embodied,15,single,1,embodied,none,150,0.54,0.54,0.46373333333333333,0.46373333333333333,0.46373333333333333
+g15 single n1 perfect,15,single,1,perfect,none,150,1.0,1.0,1.0,1.0,1.0
+g40 party n2 embodied comp-all,40,party,2,embodied,all,100,0.3,0.48,0.2964875,0.5049,0.5049
+g40 party n2 embodied,40,party,2,embodied,none,150,0.4,0.54,0.29136249999999997,0.51055,0.51055
+g40 party n2 embodied comp-one,40,party,2,embodied,one,100,0.42,0.48,0.2966125,0.49950000000000006,0.49950000000000006
+g40 party n4 embodied comp-all,40,party,4,embodied,all,100,0.22,0.52,0.19035,0.620525,0.620525
+g40 party n4 embodied,40,party,4,embodied,none,150,0.24,0.52,0.1779875,0.6156125,0.6156125
+g40 party n4 embodied comp-one,40,party,4,embodied,one,100,0.22,0.48,0.1756375,0.6147,0.6147
+g40 single n1 embodied,40,single,1,embodied,none,150,0.52,0.52,0.6724,0.6724,0.6724
+g40 single n1 perfect,40,single,1,perfect,none,150,1.0,1.0,1.0,1.0,1.0

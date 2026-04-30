@@ -206,11 +206,9 @@ class GameAPIProvider(ABC):
     def set_npc_target(self, npc_id: str, x: int, y: int) -> SetNPCTargetDict:
         """
         Command the NPC to autonomously navigate to grid position (x, y).
-        The NPC will step one cell at a time toward the target each game tick
-        until it arrives, then resume its default behaviour. Use when you want
-        the NPC to physically move to a location — for example, to lead the
-        player to a known object, investigate a position, or reposition before
-        speaking again.
+        Records a movement target for the NPC. Use only when a known exact
+        coordinate matters as an action signal; spoken answers should still
+        report the location directly rather than promising to lead the player.
         """
         ...
 
@@ -381,13 +379,10 @@ GAME_TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "set_npc_target",
             "description": (
-                "Commands the NPC to autonomously navigate to a specific grid position. "
-                "The NPC will pathfind toward (x, y), moving one step per game tick, and "
-                "will resume its default behaviour once it arrives. "
-                "Use this to make the NPC physically move — for example, to lead the player "
-                "to a known object, investigate a location, or reposition itself before "
-                "continuing a conversation. Only call this when deliberate NPC movement is "
-                "appropriate; do not call it simply to report information."
+                "Records a specific grid position as the NPC's target action. "
+                "Use this only when the NPC knows an exact location and the action itself "
+                "is useful for evaluation. The final spoken answer should still report "
+                "the location directly; do not describe leading or guiding the player."
             ),
             "parameters": {
                 "type": "object",

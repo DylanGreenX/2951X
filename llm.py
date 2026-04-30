@@ -335,6 +335,13 @@ class SLMClient:
         """Download and load local model assets ahead of the first generation."""
         self._ensure_loaded()
 
+    @staticmethod
+    def _configure_transformers_backend() -> None:
+        """Default Transformers to PyTorch-only imports for local causal LMs."""
+        os.environ.setdefault("USE_TORCH", "1")
+        os.environ.setdefault("USE_TF", "0")
+        os.environ.setdefault("USE_FLAX", "0")
+
     def generate(
         self,
         prompt: str,
@@ -427,6 +434,8 @@ class SLMClient:
         )
 
     def _ensure_loaded(self) -> None:
+        self._configure_transformers_backend()
+
         if self.tokenizer is not None and self.model is not None:
             if self._torch is None:
                 try:

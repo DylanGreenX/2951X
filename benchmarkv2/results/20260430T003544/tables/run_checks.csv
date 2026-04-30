@@ -1,0 +1,12 @@
+check,value,detail
+Expected rows,2000,40 conditions x 50 trials
+Observed rows,2000,Rows in benchmark_v2_results.csv
+Conditions observed,40,Distinct condition names in CSV
+Min trials per condition,50,By condition
+Max trials per condition,50,By condition
+Duplicate condition/trial rows,0,Should be 0
+Empty response_text rows,0,Should be 0
+Rows with llm_error,28,All observed errors are in SLM rows
+Grounding violations,0,Runner had grounding guard disabled for v2
+Rows over 30s,11,response_time_ms > 30000
+Rows over 60s,1,response_time_ms > 60000

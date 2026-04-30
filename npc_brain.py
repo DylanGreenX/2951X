@@ -64,6 +64,10 @@ class NPCBrain:
         if self.has_target and (self.npc.x, self.npc.y) == self.target_pos:
             self.set_target_pos(None)
 
+    def on_state_updated(self) -> None:
+        """Hook for callers that externally modify ``self.state``."""
+        self.state.npc_pos = (self.npc.x, self.npc.y)
+
     def _direction_toward_pos(self, target: tuple[int, int]) -> str:
         """Return the next step direction toward an (x, y) position."""
         dx = target[0] - self.npc.x
@@ -208,3 +212,6 @@ class NPCBrainGoalDriven(NPCBrain):
                 best = pos
         return best
 
+    def on_state_updated(self) -> None:
+        super().on_state_updated()
+        self._sync_known_targets()

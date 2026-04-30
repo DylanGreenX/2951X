@@ -1,0 +1,12 @@
+response_mode,condition,llm_error,count
+slm,v2 party2 15 embodied slm competitor-all,SLM output contains no JSON object.,6
+slm,v2 party2 15 embodied slm competitor-one,SLM output contains no JSON object.,1
+slm,v2 party2 15 embodied slm none,SLM output contains no JSON object.,1
+slm,v2 party2 40 embodied slm competitor-all,SLM output contains no JSON object.,5
+slm,v2 party2 40 embodied slm competitor-one,SLM output contains no JSON object.,3
+slm,v2 party2 40 embodied slm none,SLM output contains no JSON object.,1
+slm,v2 party4 40 embodied slm competitor-all,SLM output contains no JSON object.,6
+slm,v2 party4 40 embodied slm competitor-one,SLM output contains no JSON object.,1
+slm,v2 party4 40 embodied slm none,SLM output contains no JSON object.,1
+slm,v2 single 40 embodied slm,SLM did not return one strict JSON object.,1
+slm,v2 single 40 perfect slm,SLM did not return one strict JSON object.,2

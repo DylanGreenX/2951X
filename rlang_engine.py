@@ -75,6 +75,33 @@ def region_of(x: int, y: int, world_size: int) -> str:
     return get_natural_position_name(x, y, world_size)
 
 
+def _npc_display_name(npc_id: str) -> str:
+    if npc_id.startswith("npc_"):
+        suffix = npc_id.split("_")[-1]
+        if suffix.isdigit():
+            return f"NPC {int(suffix) + 1}"
+    return npc_id
+
+
+def _source_phrase(npc_ids: tuple[str, ...]) -> str:
+    if not npc_ids:
+        return "another NPC"
+    if len(npc_ids) == 1:
+        return _npc_display_name(npc_ids[0])
+    return "other NPCs"
+
+
+def _goal_source_phrase(
+    subject_npc_id: str,
+    source_npc_ids: tuple[str, ...],
+) -> str:
+    if not source_npc_ids:
+        return "another NPC"
+    if len(source_npc_ids) == 1 and source_npc_ids[0] == subject_npc_id:
+        return _npc_display_name(subject_npc_id)
+    return _source_phrase(source_npc_ids)
+
+
 @dataclass
 class RLangState:
     """
@@ -104,6 +131,9 @@ class RLangState:
     # Tick when each shape location was first recorded — drives memory decay.
     # Keyed by (x, y) since shape_locations already uses coord as identity.
     shape_first_tick: dict[tuple[int, int], int] = field(default_factory=dict)
+    observed_cell_sources: dict[tuple[int, int], tuple[str, tuple[str, ...]]] = field(default_factory=dict)
+    observed_shape_sources: dict[tuple[int, int], tuple[str, tuple[str, ...]]] = field(default_factory=dict)
+    known_npc_goals: dict[str, tuple[str, str, tuple[str, ...]]] = field(default_factory=dict)
 
     # ── Propositions (boolean beliefs) ──────────────────────────
 
@@ -115,9 +145,42 @@ class RLangState:
     @property
     def explored_regions(self) -> dict[str, bool]:
         """Proposition set: which quadrants has the NPC visited?"""
+        return self._regions_for_cells(self.observed_cells)
+
+    @property
+    def direct_coverage(self) -> float:
+        """Fraction of the world personally observed by this NPC."""
+        return len(self.direct_observed_cells) / (self.world_size ** 2)
+
+    @property
+    def direct_observed_cells(self) -> set[tuple[int, int]]:
+        return {
+            cell
+            for cell, (kind, _) in self.observed_cell_sources.items()
+            if kind in {"direct", "perfect"}
+        }
+
+    @property
+    def learned_observed_cells(self) -> set[tuple[int, int]]:
+        return {
+            cell
+            for cell, (kind, _) in self.observed_cell_sources.items()
+            if kind == "interaction"
+        }
+
+    @property
+    def direct_explored_regions(self) -> dict[str, bool]:
+        return self._regions_for_cells(self.direct_observed_cells)
+
+    @property
+    def learned_regions(self) -> dict[str, bool]:
+        return self._regions_for_cells(self.learned_observed_cells)
+
+    def _regions_for_cells(self, cells: set[tuple[int, int]]) -> dict[str, bool]:
+        """Proposition set: which quadrants have the given cells touched?"""
         mid = self.world_size // 2
         regions = {"NW": False, "NE": False, "SW": False, "SE": False}
-        for (x, y) in self.observed_cells:
+        for (x, y) in cells:
             if x < mid and y < mid:
                 regions["NW"] = True
             elif x >= mid and y < mid:
@@ -156,6 +219,7 @@ class RLangState:
 
         for x, y, shape in cells:
             self.observed_cells.add((x, y))
+            self.observed_cell_sources[(x, y)] = ("direct", ())
             if shape is None or shape in self.observed_shapes:
                 continue
             if attention == "color" and shape.color != goal_color:
@@ -164,6 +228,7 @@ class RLangState:
                 continue
             self.observed_shapes.append(shape)
             self.shape_locations.setdefault(shape.label, []).append((x, y))
+            self.observed_shape_sources[(x, y)] = ("direct", ())
             if current_step is not None:
                 self.shape_first_tick[(x, y)] = current_step
 
@@ -185,6 +250,55 @@ class RLangState:
             self.shape_locations.setdefault(s.label, []).append((s.x, s.y))
         for loc in stale:
             self.shape_first_tick.pop(loc, None)
+            self.observed_shape_sources.pop(loc, None)
+
+    def replace_memory(
+        self,
+        *,
+        observed_cells: set[tuple[int, int]],
+        observed_shapes: list[Shape],
+        shape_locations: dict[str, list[tuple[int, int]]],
+        shape_first_tick: dict[tuple[int, int], int],
+        observed_cell_sources: dict[tuple[int, int], tuple[str, tuple[str, ...]]] | None = None,
+        observed_shape_sources: dict[tuple[int, int], tuple[str, tuple[str, ...]]] | None = None,
+        known_npc_goals: dict[str, tuple[str, str, tuple[str, ...]]] | None = None,
+    ) -> None:
+        """Replace embodied memory while preserving the caller-owned npc_pos."""
+        self.observed_cells = set(observed_cells)
+        self.observed_shapes = list(observed_shapes)
+        self.shape_locations = {
+            label: list(positions)
+            for label, positions in shape_locations.items()
+        }
+        self.shape_first_tick = dict(shape_first_tick)
+        self.observed_cell_sources = {
+            cell: (
+                kind,
+                tuple(sorted(set(npc_ids))),
+            )
+            for cell, (kind, npc_ids) in (observed_cell_sources or {}).items()
+        }
+        self.observed_shape_sources = {
+            cell: (
+                kind,
+                tuple(sorted(set(npc_ids))),
+            )
+            for cell, (kind, npc_ids) in (observed_shape_sources or {}).items()
+        }
+        for cell in self.observed_cells:
+            self.observed_cell_sources.setdefault(cell, ("direct", ()))
+        for label, positions in self.shape_locations.items():
+            for pos in positions:
+                self.observed_shape_sources.setdefault(pos, ("direct", ()))
+        self.known_npc_goals = {
+            npc_id: (
+                goal_label,
+                kind,
+                tuple(sorted(set(source_npc_ids))),
+            )
+            for npc_id, (goal_label, kind, source_npc_ids) in (known_npc_goals or {}).items()
+            if goal_label
+        }
 
     # ── Serialization → LLM context ────────────────────────────
 
@@ -196,26 +310,99 @@ class RLangState:
             self.npc_pos[0], self.npc_pos[1], self.world_size
         )
         lines.append(f"I am currently in {current_region}.")
-        lines.append(f"I've explored {self.coverage:.0%} of this region during my travels.")
+        if self.learned_observed_cells:
+            lines.append(
+                f"I have personally explored {self.direct_coverage:.0%} of this region during my travels."
+            )
+            lines.append(
+                f"Counting information learned from other NPCs, I know about {self.coverage:.0%} of this region."
+            )
+        else:
+            lines.append(f"I've explored {self.coverage:.0%} of this region during my travels.")
 
-        regions = self.explored_regions
-        explored = [r for r, v in regions.items() if v]
-        unexplored = [r for r, v in regions.items() if not v]
-        if explored:
-            lines.append(f"I have traveled through the {', '.join(explored)} area(s).")
-        if unexplored:
-            lines.append(f"I have not yet ventured into the {', '.join(unexplored)} region(s).")
+        direct_regions = self.direct_explored_regions
+        direct_explored = [r for r, v in direct_regions.items() if v]
+        direct_unexplored = [r for r, v in direct_regions.items() if not v]
+        if direct_explored:
+            lines.append(f"I have traveled through the {', '.join(direct_explored)} area(s).")
+        if direct_unexplored:
+            lines.append(f"I have not yet ventured into the {', '.join(direct_unexplored)} region(s).")
+
+        learned_regions = [
+            r for r, v in self.learned_regions.items()
+            if v and not direct_regions.get(r, False)
+        ]
+        if learned_regions:
+            lines.append(f"Other NPCs have told me about the {', '.join(learned_regions)} area(s).")
+
+        for npc_id in sorted(self.known_npc_goals):
+            goal_label, kind, source_npc_ids = self.known_npc_goals[npc_id]
+            natural_goal_name = get_natural_object_name(goal_label)
+            npc_name = _npc_display_name(npc_id)
+            if kind == "interaction":
+                source_phrase = _goal_source_phrase(npc_id, source_npc_ids)
+                source_phrase = source_phrase[0].upper() + source_phrase[1:]
+                if len(source_npc_ids) == 1 and source_npc_ids[0] == npc_id:
+                    lines.append(
+                        f"{source_phrase} told me they are searching for the {natural_goal_name}."
+                    )
+                else:
+                    lines.append(
+                        f"{source_phrase} told me that {npc_name} is searching for the {natural_goal_name}."
+                    )
+            elif kind == "perfect":
+                lines.append(f"I know that {npc_name} is searching for the {natural_goal_name}.")
+            else:
+                lines.append(f"I know that {npc_name} is searching for the {natural_goal_name}.")
 
         for label, positions in self.shape_locations.items():
             natural_name = get_natural_object_name(label)
-            natural_locations = [
-                get_natural_position_name(x, y, self.world_size) for x, y in positions
-            ]
+            direct_positions: list[tuple[int, int]] = []
+            interaction_positions_by_source: dict[tuple[str, ...], list[tuple[int, int]]] = {}
+            perfect_positions: list[tuple[int, int]] = []
 
-            if len(positions) == 1:
-                lines.append(f"I found a {natural_name} in {natural_locations[0]}.")
-            else:
-                location_list = ", ".join(natural_locations)
-                lines.append(f"I've seen {len(positions)} {natural_name}s in: {location_list}.")
+            for pos in positions:
+                kind, npc_ids = self.observed_shape_sources.get(pos, ("direct", ()))
+                if kind == "interaction":
+                    interaction_positions_by_source.setdefault(npc_ids, []).append(pos)
+                elif kind == "perfect":
+                    perfect_positions.append(pos)
+                else:
+                    direct_positions.append(pos)
+
+            if direct_positions:
+                natural_locations = [
+                    get_natural_position_name(x, y, self.world_size) for x, y in direct_positions
+                ]
+                if len(direct_positions) == 1:
+                    lines.append(f"I found a {natural_name} in {natural_locations[0]}.")
+                else:
+                    location_list = ", ".join(natural_locations)
+                    lines.append(f"I've seen {len(direct_positions)} {natural_name}s in: {location_list}.")
+
+            for npc_ids, source_positions in sorted(interaction_positions_by_source.items()):
+                natural_locations = [
+                    get_natural_position_name(x, y, self.world_size) for x, y in source_positions
+                ]
+                source_phrase = _source_phrase(npc_ids)
+                if len(source_positions) == 1:
+                    lines.append(
+                        f"{source_phrase} told me there is a {natural_name} in {natural_locations[0]}."
+                    )
+                else:
+                    location_list = ", ".join(natural_locations)
+                    lines.append(
+                        f"{source_phrase} told me about {len(source_positions)} {natural_name}s in: {location_list}."
+                    )
+
+            if perfect_positions:
+                natural_locations = [
+                    get_natural_position_name(x, y, self.world_size) for x, y in perfect_positions
+                ]
+                if len(perfect_positions) == 1:
+                    lines.append(f"I know there is a {natural_name} in {natural_locations[0]}.")
+                else:
+                    location_list = ", ".join(natural_locations)
+                    lines.append(f"I know of {len(perfect_positions)} {natural_name}s in: {location_list}.")
 
         return lines
